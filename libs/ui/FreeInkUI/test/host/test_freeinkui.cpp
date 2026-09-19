@@ -3418,6 +3418,16 @@ void testQwertyKeyboardComponent() {
   CHECK_EQ(interactions.data()[19].rect.x, 0);
   CHECK(interactions.data()[19].rect.width > interactions.data()[20].rect.width);
   CHECK_EQ(interactions.data()[19].rect.width, interactions.data()[27].rect.width);
+  Rect selectedFill{};
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind != FakeDrawTarget::Op::Fill || draw.ops[i].color != Color::Black) continue;
+    selectedFill = draw.ops[i].rect;
+    break;
+  }
+  CHECK_EQ(draw.ops[0].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(selectedFill.y, draw.ops[0].rect.y);
+  CHECK_EQ(selectedFill.width, draw.ops[0].rect.width);
+  CHECK_EQ(selectedFill.height, draw.ops[0].rect.height);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 2u);
   bool sawDelete = false;
   bool sawShift = false;
@@ -4058,7 +4068,7 @@ void testScreenKeyboardUsesResponsiveHeight() {
   CHECK(interactions.data()[30].rect.bottom() <= device.height);
 }
 
-void testKeyboardHighlightPadding() {
+void testKeyboardFullSizeHighlight() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice(480, 800);
   InputSnapshot input;
@@ -4093,8 +4103,8 @@ void testKeyboardHighlightPadding() {
     CHECK_EQ(interactions.data()[0].rect.height, 80);
     CHECK_EQ(draw.ops[0].kind, FakeDrawTarget::Op::Fill);
     CHECK_EQ(draw.ops[0].color, phase == 0 ? Color::White : Color::Black);
-    CHECK_EQ(draw.ops[0].rect.height, phase == 0 ? 80 : 72);
-    CHECK_EQ(draw.ops[0].rect.y, keyRect.y + (phase == 0 ? 0 : 4));
+    CHECK_EQ(draw.ops[0].rect.height, 80);
+    CHECK_EQ(draw.ops[0].rect.y, keyRect.y);
     CHECK_EQ(draw.ops[0].rect.y + draw.ops[0].rect.height / 2, keyRect.y + keyRect.height / 2);
     CHECK_EQ(draw.ops[0].rect.width, 100);
     int labels = 0;
@@ -5566,7 +5576,7 @@ int main() {
   testScreenKeyboardUsesResponsiveHeight();
   testTallKeyboardSizing();
   testKeyboardTypography();
-  testKeyboardHighlightPadding();
+  testKeyboardFullSizeHighlight();
   testCompactKeyboardAltLabelStaysInsideKey();
   testQwertyKeyboardSpacingOverrides();
   testScreenContentMarginCoordinateSpaces();
