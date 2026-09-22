@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+"""freeink-sim — command-line control for the FreeInk device simulator.
+
+Talks to a running freeink-simd over its Unix socket. Every command prints the
+daemon's JSON reply, so output is both readable and machine-parseable; --quiet
+prints only what matters for scripting, and a failed command exits nonzero, so
+`set -e` and agent loops behave.
+
+Examples:
+    freeink-sim status
+    freeink-sim press confirm
+    freeink-sim capture --wait-refresh --out screen.png
+    freeink-sim log --follow
+    freeink-sim load firmware-x3-x4-v1.5.1.bin      # emulate a device image
+    freeink-sim emu                                 # how the emulated image is doing
+    freeink-sim run --device X4CLASSIC main.cpp     # build, load, and watch
+
+Standard library only, so there is nothing to install.
+"""
+
+import argparse
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+SIM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_SOCKET = os.path.join(os.path.expanduser("~"), ".freeink-sim", "sim.sock")
+
+
+class SimError(Exception):
+    """A command the daemon refused, or a daemon that is not reachable."""
+
+
+class Client:
+    """One connection to the daemon. Commands are line in, JSON line out."""
+
+    def __init__(self, socket_path, timeout=30.0):
+        self.socket_path = socket_path
+        self.timeout = timeout
+        self._sock = None
+        self._buffer = b""
+
+    def connect(self):
+        if self._sock:
+            return
+        if not os.path.exists(self.socket_path):
+            raise SimError(
+                f"no simulator at {self.socket_path}\n"
+                f"Start one with:  {os.path.join(SIM_DIR, 'build', 'freeink-simd')}"
+            )
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.settimeout(self.timeout)
+        try:
+            self._sock.connect(self.socket_path)
+        except OSError as exc:
+            self._sock = None
+            raise SimError(f"cannot reach the simulator at {self.socket_path}: {exc}") from exc
+
+    def send(self, command):
+        self.connect()
+        self._sock.sendall(command.encode("utf-8") + b"\n")
+        while b"\n" not in self._buffer:
+            try:
+                chunk = self._sock.recv(65536)
+            except socket.timeout as exc:
+                raise SimError(f"the simulator did not answer within {self.timeout:g}s") from exc
+            if not chunk:
+                raise SimError("the simulator closed the connection")
+            self._buffer += chunk
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        reply = json.loads(line.decode("utf-8"))
+        if not reply.get("ok", False):
+            raise SimError(reply.get("error", "the simulator refused the command"))
+        return reply
+
+    def close(self):
+        if self._sock:
+            self._sock.close()
+            self._sock = None
+
+
+def quote(value):
+    """Quotes an argument only when the line protocol needs it."""
+    text = str(value)
+    if text and not any(c in text for c in ' \t"\\'):
+        return text
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def build_command(verb, *args, **flags):
+    parts = [verb]
+    parts.extend(quote(a) for a in args if a is not None)
+    for name, value in flags.items():
+        if value is None or value is False:
+            continue
+        name = name.replace("_", "-")
+        if value is True:
+            parts.append(f"--{name}")
+        else:
+            parts.extend([f"--{name}", quote(value)])
+    return " ".join(parts)
+
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+
+def cmd_raw(client, args):
+    return client.send(" ".join(args.command))
+
+
+def cmd_status(client, args):
+    reply = client.send("status")
+    if args.json:
+        return reply
+    panel = reply.get("panel", {})
+    clock = reply.get("clock", {})
+    frame = reply.get("frame", {})
+    print(f"firmware   {reply.get('firmware') or '(none loaded)'}")
+    print(f"board      {reply.get('board')}  [{reply.get('controller')}]")
+    print(f"panel      {panel.get('width')}x{panel.get('height')}")
+    print(f"running    {reply.get('running')}   power: {reply.get('power')}   busy: {reply.get('busy')}")
+    print(
+        f"clock      {clock.get('us', 0) / 1e6:.3f}s  {clock.get('mode')}"
+        f"{' (paused)' if clock.get('paused') else ''}  rate {clock.get('rate')}"
+    )
+    print(f"frame      #{frame.get('seq')}  {frame.get('kind')}  {frame.get('duration_ms')}ms")
+    print(f"sd         {reply.get('sd') or '(no card)'}")
+    emulated = reply.get("emulated")
+    if emulated:
+        print(
+            f"emulated   {emulated.get('chip')}  {emulated.get('instructions'):,} instructions,"
+            f" {emulated.get('interrupts'):,} interrupts"
+            f"{'  (stopped)' if emulated.get('stopped') else ''}"
+        )
+    return None
+
+
+def cmd_emu(client, args):
+    reply = client.send("emu")
+    if args.json:
+        return reply
+    print(f"image       {reply.get('image')}")
+    print(f"chip        {reply.get('chip')}  ({reply.get('isa')})")
+    print(f"project     {reply.get('project')} {reply.get('version')}  ESP-IDF {reply.get('idf')}")
+    print(f"entry       0x{reply.get('entry', 0):08X}   pc now 0x{reply.get('pc', 0):08X}")
+    print(
+        f"executed    {reply.get('instructions', 0):,} instructions,"
+        f" {reply.get('interrupts', 0):,} interrupts,"
+        f" {reply.get('exceptions', 0):,} exceptions"
+    )
+    print(f"sim time    {reply.get('time_us', 0) / 1e6:.3f}s")
+    print(f"state       {reply.get('reason')}")
+    if reply.get("partitions_synthesized"):
+        print("partitions  synthesized (pass the real partitions.bin if the firmware reads its own)")
+    gaps = reply.get("gaps") or []
+    if gaps:
+        print("gaps        " + "\n            ".join(gaps))
+    return None
+
+
+def cmd_mem(client, args):
+    reply = client.send(f"mem {args.address} {args.length}")
+    if args.json:
+        return reply
+    data = bytes.fromhex(reply.get("bytes", ""))
+    base = reply.get("address", 0)
+    print(reply.get("region", ""))
+    for offset in range(0, len(data), 16):
+        chunk = data[offset:offset + 16]
+        hexed = " ".join(f"{b:02X}" for b in chunk)
+        text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        print(f"  {base + offset:08X}  {hexed:<47}  {text}")
+    return None
+
+
+def cmd_registers(client, args):
+    reply = client.send(
+        "registers" + (f" {args.block}" if args.block else "") + f" --limit {args.limit}")
+    if args.json:
+        return reply
+    rows = reply.get("registers") or []
+    if not rows:
+        print("no peripheral registers recorded"
+              if args.block else "every register the firmware touched has a model")
+        return None
+    if reply.get("scope") == "unmodelled":
+        print("registers the firmware touched that nothing models:")
+    for row in rows:
+        kind = "write" if row.get("write") else "read"
+        print(f"  0x{row.get('address', 0):08X}  {kind:<5} {row.get('count', 0):>9,}"
+              f"  value=0x{row.get('value', 0):08X}")
+    return None
+
+
+def cmd_capture(client, args):
+    out = os.path.abspath(args.out) if args.out else None
+    reply = client.send(
+        build_command(
+            "capture",
+            out=out,
+            wait_refresh=args.wait_refresh,
+            timeout=args.timeout,
+            after=args.after,
+        )
+    )
+    if out:
+        if args.json:
+            return reply
+        if not args.quiet:
+            print(f"{out}  ({reply['width']}x{reply['height']}, frame #{reply['seq']}, {reply['kind']})")
+        return None
+    if args.json:
+        return reply
+    # No --out: write the PNG to stdout so it can be piped.
+    import base64
+
+    sys.stdout.buffer.write(base64.b64decode(reply["png_base64"]))
+    return None
+
+
+def cmd_log(client, args):
+    since = 0
+    try:
+        while True:
+            reply = client.send(build_command("log", since=since, channel=args.channel))
+            for line in reply["lines"]:
+                print(line["text"], flush=True)
+                since = line["seq"]
+            since = max(since, 0)
+            if not args.follow:
+                break
+            time.sleep(0.15)
+    except KeyboardInterrupt:
+        pass
+    return None
+
+
+def cmd_expect(client, args):
+    """Waits for a line matching a pattern. The primitive an agent loop needs:
+    do something, then block until the firmware says it happened.
+
+    Searches the whole log by default, because the action that produces the line
+    often completes before this runs -- `press` does not return until the
+    firmware has sampled it. Use --only-new to watch for a fresh occurrence of a
+    pattern that has matched before."""
+    import re
+
+    pattern = re.compile(args.pattern)
+    deadline = time.time() + args.timeout / 1000.0
+    since = client.send("log")["last"] if args.only_new else 0
+    while time.time() < deadline:
+        reply = client.send(build_command("log", since=since))
+        for line in reply["lines"]:
+            since = line["seq"]
+            if pattern.search(line["text"]):
+                if not args.quiet:
+                    print(line["text"])
+                return None
+        time.sleep(0.05)
+    raise SimError(f"no log line matched /{args.pattern}/ within {args.timeout}ms")
+
+
+def cmd_press(client, args):
+    for name in args.buttons:
+        reply = client.send(build_command("press", name, hold=args.hold, timeout=args.timeout))
+        if not args.quiet:
+            print(f"pressed {name} ({reply.get('held_ms')}ms)")
+    return None
+
+
+def cmd_build(client, args):
+    """Builds a firmware bundle. Does not need a running daemon."""
+    script = os.path.join(SIM_DIR, "build", "build-firmware.sh")
+    command = ["sh", script, "--device", args.device]
+    if args.out:
+        command += ["--out", args.out]
+    for define in args.define or []:
+        command += ["--define", define]
+    command += args.sources
+    result = subprocess.run(command, capture_output=not args.verbose)
+    if result.returncode != 0:
+        if not args.verbose and result.stderr:
+            sys.stderr.write(result.stderr.decode("utf-8", "replace"))
+        raise SimError("firmware build failed")
+    out = args.out or os.path.join(SIM_DIR, "build", f"{args.device.lower()}.{bundle_extension()}")
+    if not args.quiet:
+        print(out)
+    return out
+
+
+def bundle_extension():
+    return "dylib" if sys.platform == "darwin" else "so"
+
+
+def cmd_run(client, args):
+    """Build, load, and follow the log — the one command for an edit/test cycle."""
+    bundle = cmd_build(client, argparse.Namespace(
+        device=args.device, out=args.out, define=args.define, sources=args.sources,
+        verbose=args.verbose, quiet=True))
+    client.send(build_command("load", os.path.abspath(bundle)))
+    if not args.quiet:
+        print(f"loaded {bundle}")
+    if args.follow:
+        cmd_log(client, argparse.Namespace(follow=True, channel=None))
+    return None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="freeink-sim",
+        description="Control a running FreeInk device simulator.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__.split("Examples:")[1].rstrip() if "Examples:" in __doc__ else None,
+    )
+    parser.add_argument("--socket", default=os.environ.get("FREEINK_SIM_SOCKET", DEFAULT_SOCKET),
+                        help="daemon control socket (default: %(default)s)")
+    parser.add_argument("--timeout", type=float, default=30.0, help="reply timeout in seconds")
+    parser.add_argument("--json", action="store_true", help="print the raw JSON reply")
+    parser.add_argument("-q", "--quiet", action="store_true", help="print only essential output")
+
+    # The same global flags again on every subcommand, so both `freeink-sim -q
+    # press confirm` and `freeink-sim press confirm -q` work -- the second is
+    # what people actually type. SUPPRESS keeps an unused subcommand flag from
+    # overwriting the value given before the verb.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--socket", default=argparse.SUPPRESS)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    common.add_argument("-q", "--quiet", action="store_true", default=argparse.SUPPRESS)
+
+    sub = parser.add_subparsers(dest="verb", required=True, parser_class=lambda **kw: argparse.ArgumentParser(
+        parents=[common], **kw))
+
+    sub.add_parser("status", help="show the machine's state").set_defaults(func=cmd_status)
+
+    sub.add_parser("emu", help="report on an emulated device image").set_defaults(func=cmd_emu)
+
+    p = sub.add_parser("mem", help="dump emulated memory")
+    p.add_argument("address", help="address, e.g. 0x3FC80000")
+    p.add_argument("length", nargs="?", default="64")
+    p.set_defaults(func=cmd_mem)
+
+    p = sub.add_parser("registers", help="peripheral registers an emulated image touched")
+    p.add_argument("block", nargs="?", help="a peripheral base address; omit for unmodelled ones")
+    p.add_argument("--limit", default=20)
+    p.set_defaults(func=cmd_registers)
+
+    p = sub.add_parser("capture", help="save the panel image")
+    p.add_argument("out", nargs="?", help="PNG path (omit to write PNG to stdout)")
+    p.add_argument("--wait-refresh", action="store_true", help="wait for the next refresh first")
+    p.add_argument("--after", type=int, help="wait for a frame newer than this sequence number")
+    p.add_argument("--timeout", type=int, default=5000, help="wait timeout in ms (default: %(default)s)")
+    p.set_defaults(func=cmd_capture)
+
+    p = sub.add_parser("press", help="press one or more buttons")
+    p.add_argument("buttons", nargs="+", help="back, confirm, left, right, up, down, power")
+    p.add_argument("--hold", type=int, default=None,
+                   help="force a fixed hold in ms (default: hold until the firmware samples the press)")
+    p.add_argument("--timeout", type=int, default=None,
+                   help="give up after this many ms if the firmware never samples the press")
+    p.set_defaults(func=cmd_press)
+
+    p = sub.add_parser("log", help="print the firmware log")
+    p.add_argument("-f", "--follow", action="store_true", help="keep printing new lines")
+    p.add_argument("--channel", help="only this channel (serial, sim, wdt, ...)")
+    p.set_defaults(func=cmd_log)
+
+    p = sub.add_parser("expect", help="wait for a log line matching a regex")
+    p.add_argument("pattern")
+    p.add_argument("--timeout", type=int, default=5000, help="timeout in ms (default: %(default)s)")
+    p.add_argument("--only-new", action="store_true",
+                   help="only match lines logged after this command starts (default: search the whole log)")
+    p.set_defaults(func=cmd_expect)
+
+    p = sub.add_parser("build", help="build a firmware bundle")
+    p.add_argument("sources", nargs="+")
+    p.add_argument("--device", required=True, help="X3, X4, X4CLASSIC, X4PRO, ...")
+    p.add_argument("--out")
+    p.add_argument("--define", action="append")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.set_defaults(func=cmd_build, needs_daemon=False)
+
+    p = sub.add_parser("run", help="build, load, and follow the log")
+    p.add_argument("sources", nargs="+")
+    p.add_argument("--device", required=True)
+    p.add_argument("--out")
+    p.add_argument("--define", action="append")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--no-follow", dest="follow", action="store_false", default=True)
+    p.set_defaults(func=cmd_run)
+
+    # Everything else is passed through to the daemon verbatim, so the CLI never
+    # becomes the thing that blocks a new daemon command.
+    p = sub.add_parser("raw", help="send a raw command to the daemon")
+    p.add_argument("command", nargs=argparse.REMAINDER)
+    p.set_defaults(func=cmd_raw)
+
+    for verb, help_text in [
+        ("load", "load a firmware bundle or a device image (.bin)"),
+        ("reset", "restart the firmware"),
+        ("unload", "stop the firmware"),
+        ("pause", "freeze the simulated clock"),
+        ("resume", "resume the simulated clock"),
+        ("step", "advance the clock by N ms"),
+        ("clock", "inspect or change the clock mode"),
+        ("release", "release a held button"),
+        ("hold", "hold a button down"),
+        ("tap", "tap the touchscreen at x y"),
+        ("touch", "press or release the touchscreen"),
+        ("wait-refresh", "block until the panel refreshes"),
+        ("bus", "show decoded panel bus traffic"),
+        ("i2c", "list virtual I2C devices"),
+        ("sd", "mount a directory (or an image) as the SD card, eject it, or inspect it"),
+        ("nvs", "inspect or change stored settings"),
+        ("battery", "inspect or set battery state"),
+        ("usb", "plug or unplug USB"),
+        ("light", "show PWM/frontlight state"),
+        ("imu", "inspect or set the IMU orientation"),
+        ("wifi", "manage virtual networks"),
+        ("audio", "inspect or save captured audio"),
+        ("gpio", "inspect or drive a pin"),
+        ("wake", "wake the machine from sleep"),
+        ("seed", "seed the firmware's random source"),
+        ("log-clear", "clear the log ring"),
+    ]:
+        # prefix_chars='\0': nothing in a pass-through command looks like an
+        # option to argparse, so `bus --limit 200` forwards --limit to the
+        # daemon instead of being rejected here. Global flags still work, but
+        # must come before the verb for these commands.
+        p = sub.add_parser(verb, help=help_text, prefix_chars="\0", add_help=False)
+        p.add_argument("args", nargs="*")
+        p.set_defaults(func=lambda client, args, verb=verb: client.send(
+            " ".join([verb] + [quote(a) for a in args.args])))
+
+    args = parser.parse_args(argv)
+    client = Client(args.socket, args.timeout)
+    try:
+        if getattr(args, "needs_daemon", True):
+            client.connect()
+        reply = args.func(client, args)
+        if reply is not None and (args.json or not args.quiet):
+            print(json.dumps(reply, indent=2) if args.json else format_reply(reply))
+    except SimError as exc:
+        print(f"freeink-sim: {exc}", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
+        return 0
+    finally:
+        client.close()
+    return 0
+
+
+def format_reply(reply):
+    """Prints a reply without the JSON noise, for the pass-through commands."""
+    fields = {k: v for k, v in reply.items() if k != "ok"}
+    if not fields:
+        return "ok"
+    if len(fields) == 1 and not isinstance(next(iter(fields.values())), (list, dict)):
+        return str(next(iter(fields.values())))
+    return json.dumps(fields, indent=2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
