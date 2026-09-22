@@ -14,7 +14,8 @@ It is **drop-in compatible** with firmware written against the original
 API: switching to FreeInk is a matter of repointing the library path.
 
 Start with [PlatformIO integration](#using-freeink-from-platformio), browse the
-[documentation index](docs/README.md), or run the [host tests](docs/testing.md).
+[documentation index](docs/README.md), run the [host tests](docs/testing.md), or
+try firmware without a device in the [simulator](docs/simulator.md).
 
 ## What's included
 
@@ -33,6 +34,12 @@ Start with [PlatformIO integration](#using-freeink-from-platformio), browse the
   (see [docs/freeink-book.md](docs/freeink-book.md)).
 - **Icon and asset tooling** for crisp 1-bpp Lucide-derived icons and generated
   C/C++ assets.
+- **A device simulator** that runs firmware on your machine and is driven from a
+  CLI — press buttons, capture the panel, inspect decoded display-bus traffic —
+  so firmware can be developed and tested without hardware in hand. It runs
+  firmware built from source, and it emulates the SoC well enough to run a
+  device-ready `.bin` you did not build
+  (see [docs/simulator.md](docs/simulator.md)).
 
 ## Credit & lineage
 

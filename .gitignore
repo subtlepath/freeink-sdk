@@ -6,3 +6,15 @@
 .DS_Store
 tools/firmware/DisplayAudit.java
 docs/xteink-x4pro-licorice-analysis.md
+
+# Simulator build output (the daemon binary, the emulator tool, and bundles).
+tools/simulator/build/freeink-simd
+tools/simulator/build/freeink-emu
+tools/simulator/build/*.dylib
+tools/simulator/build/*.so
+tools/simulator/build/*.dSYM/
+
+# Device firmware images. These are vendor binaries: the emulator runs them,
+# but they are not ours to redistribute.
+firmware*.bin
+__pycache__/

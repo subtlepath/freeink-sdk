@@ -38,3 +38,17 @@ its terms:
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+ESP32 ROM symbol maps
+---------------------
+
+tools/simulator/emu/rom/*.romsyms are generated from the ROM interface linker
+scripts published with ESP-IDF (components/esp_rom/<chip>/ld/*.ld), by
+tools/simulator/emu/rom/import-rom-symbols.py. They contain symbol names and
+addresses only — no ROM code — and are used by the emulator to intercept calls
+into ESP32 mask ROM and run native implementations in their place.
+
+    ESP-IDF
+    Copyright (c) Espressif Systems (Shanghai) CO LTD
+    Licensed under the Apache License, Version 2.0
+    https://github.com/espressif/esp-idf

@@ -52,6 +52,32 @@ the drivers included in each harness.
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md).
 
+## Device simulator
+
+```sh
+sh tools/simulator/test/run.sh           # firmware built from source
+sh tools/simulator/test/run-emulator.sh  # a device-ready firmware image
+```
+
+The first builds the simulator daemon and a demo firmware for the Xteink X4
+Classic and X3, then drives both over the control socket: board detection, first
+paint, BUSY-edge refresh timing, capture geometry, button and ADC-ladder input,
+I2C device presence, panel bus decoding, frame orientation, virtual-clock speed,
+and firmware restart.
+
+The second covers the SoC emulator, which runs a flashable `.bin` rather than a
+host build: image parsing, instruction execution, peripheral writes,
+breakpoints, flash MMU translation, and the daemon integration. Its fixture is a
+small ESP32-C3 image the suite assembles itself, so it needs no vendor firmware;
+set `FSIM_TEST_IMAGE` to add a boot check against a real one.
+
+Both need a C++17 compiler and Python 3; SDL2 is optional and the suites run
+headless without it.
+
+Unlike the other suites, these run production firmware end to end against a
+modelled device — see [the simulator guide](simulator.md) for what they do and
+do not model.
+
 ## Validation limits
 
 Host suites cover only the code and configurations each harness compiles. Run
