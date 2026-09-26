@@ -57,6 +57,15 @@ StyleSet defaultListRowStyles() {
 
 StyleSet defaultKeyStyles() {
   StyleSet styles = defaultButtonStyles();
+  const auto addOutline = [](BoxStyle& style) {
+    style.border = Paint::solid(Color::Black);
+    style.borderWidth = 1;
+  };
+  addOutline(styles.normal);
+  addOutline(styles.selected);
+  addOutline(styles.focused);
+  addOutline(styles.active);
+  addOutline(styles.disabled);
   return styles;
 }
 

@@ -95,8 +95,8 @@ struct KeyboardProps {
   // the small slot).
   TextStyle altText{};
   StyleSet keyStyles{};
-  Insets padding{5, 2, 5, 2};
-  int16_t gap = 2;
+  Insets padding{4, 4, 4, 4};
+  int16_t gap = 6;
   int16_t minTouchSize = 28;
   uint8_t keyRadius = 3;
   // Extra hit area below the last row's keys. Fingers occlude the key being
@@ -117,19 +117,19 @@ struct KeyboardProps {
   // Appended fields preserve positional aggregate initialization.
   // Optional panel fill drawn behind the keys. The gaps and padding expose
   // this paint, allowing keys to stand apart from the surrounding screen.
-  Paint background = Paint::none();
-  // Optional localized text for the space key. Null keeps the compact glyph.
-  const char* spaceLabel = nullptr;
+  Paint background = Paint::dither(Color::LightGray);
+  // An empty label leaves the outlined Space key clear; null draws its rule glyph.
+  const char* spaceLabel = "";
   // Give every character key the same width across rows. Rows containing
   // letters, numbers, or symbols use the narrowest unit that fits any such
   // row, while control-only rows continue to fill their available width.
-  bool uniformKeyWidth = false;
+  bool uniformKeyWidth = true;
 };
 
 // Preferred total height for touch entry. Size each row independently so a
 // dedicated number row adds height instead of compressing every key. Callers
 // using the low-level Rect API can use this when reserving their keyboard area.
-inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount, Insets padding = Insets{5, 2, 5, 2},
+inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount, Insets padding = Insets{4, 4, 4, 4},
                                        int16_t rowGap = 6, int16_t minRowHeight = 64) {
   if (rowCount == 0) return 0;
   int32_t rowHeight = width / 6;
@@ -542,7 +542,7 @@ class KeyboardEntry {
 template <size_t MaxInteractions>
 void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& props) {
   if (!props.layout || !props.layout->rows || props.layout->rowCount == 0) return;
-  StyleSet styles = props.keyStyles.unset() ? defaultButtonStyles() : props.keyStyles;
+  StyleSet styles = props.keyStyles.unset() ? defaultKeyStyles() : props.keyStyles;
   if (props.keyRadius > 0) setStyleRadius(styles, props.keyRadius);
   TextStyle keyText = props.labelText;
   keyText.align = TextAlign::Center;
