@@ -19,6 +19,11 @@ uint8_t toBcd(int value) { return static_cast<uint8_t>(((value / 10) << 4) | (va
 // records at 0x8150, then writes 0 back to 0x814E to release the frame. The
 // model reproduces that handshake exactly, including the "coords at byte 0"
 // variant some modules ship, because the SDK branches on it.
+//
+// The controller scans continuously: while a finger is down every poll finds a
+// fresh frame, and when it lifts, one more ready frame reports zero contacts.
+// That release frame is what completes a tap or a swipe in the driver, so it
+// stays ready until the host clears it; after that the ready bit stays clear.
 class Gt911Device : public I2cDevice {
  public:
   Gt911Device(Machine& machine, const fsim_board_desc& desc) : machine_(machine), desc_(desc) {}
@@ -48,7 +53,7 @@ class Gt911Device : public I2cDevice {
     if (txLen >= 2) reg_ = static_cast<uint16_t>((tx[0] << 8) | tx[1]);
     // A write of a third byte to 0x814E is the frame-release the driver issues.
     if (txLen >= 3 && reg_ == 0x814E) {
-      frameConsumed_ = true;
+      if (!machine_.touch().down) releasePending_ = false;
       return true;
     }
     if (rxLen == 0) return true;  // bare address probe, or a register write
@@ -62,8 +67,11 @@ class Gt911Device : public I2cDevice {
     const Machine::TouchPoint touch = machine_.touch();
 
     if (reg == 0x814E) {
-      if (!touch.down || frameConsumed_) return 0x00;
-      return 0x80 | 0x01;  // data ready, one contact
+      if (touch.down) {
+        releasePending_ = true;
+        return 0x80 | 0x01;  // data ready, one contact
+      }
+      return releasePending_ ? 0x80 : 0x00;  // data ready with no contacts: the lift
     }
     if (reg >= 0x8150 && reg < 0x8150 + 8 * 5) {
       const int offset = (reg - 0x8150) % 8;
@@ -104,7 +112,7 @@ class Gt911Device : public I2cDevice {
   Machine& machine_;
   fsim_board_desc desc_;
   uint16_t reg_ = 0;
-  bool frameConsumed_ = false;
+  bool releasePending_ = false;  // the finger lifted; the zero-contact frame is not yet cleared
 };
 
 // ── FT6336U / FT5x06 / CHSC6x single-touch digitizers ────────────────────────
