@@ -4120,9 +4120,21 @@ void testScreenKeyboardUsesResponsiveHeight() {
   screen.qwertyKeyboard(keyboard, 0, LayoutAnchor::Bottom);
 
   CHECK_EQ(interactions.count(), 31u);
-  CHECK(interactions.data()[0].rect.y >= 228);
-  CHECK(interactions.data()[0].rect.y < 243);
+  CHECK_EQ(interactions.data()[0].rect.y, 234);
+  CHECK_EQ(interactions.data()[0].rect.height, 56);
   CHECK(interactions.data()[30].rect.bottom() <= device.height);
+
+  FakeDrawTarget numberDraw;
+  InteractionBuffer<64> numberInteractions;
+  Frame<64> numberFrame(numberDraw, device, input, numberInteractions);
+  Screen<64> numberScreen(numberFrame, theme);
+  QwertyKeyboardProps numberKeyboard;
+  numberKeyboard.keyAction = 400;
+  numberKeyboard.numberRow = true;
+  numberScreen.qwertyKeyboard(numberKeyboard, 0, LayoutAnchor::Bottom);
+  CHECK_EQ(numberInteractions.count(), 41u);
+  CHECK_EQ(numberInteractions.data()[0].rect.y, 172);
+  CHECK_EQ(numberInteractions.data()[0].rect.height, 56);
 }
 
 void testKeyboardFullSizeHighlight() {
@@ -4333,9 +4345,12 @@ void testKeyboardTypography() {
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), interactions.count());
 }
 
-void testTallKeyboardSizing() {
-  CHECK_EQ(keyboardPreferredHeight(480, 4), 346);
-  CHECK_EQ(keyboardPreferredHeight(480, 5), 432);
+void testResponsiveKeyboardSizing() {
+  CHECK_EQ(keyboardPreferredHeight(320, 4), 162);
+  CHECK_EQ(keyboardPreferredHeight(480, 4), 250);
+  CHECK_EQ(keyboardPreferredHeight(480, 5), 312);
+  CHECK_EQ(keyboardPreferredHeight(800, 5), 312);
+  CHECK_EQ(keyboardPreferredHeight(480, 5, Insets{4, 4, 4, 4}, 6, 28, 10), 287);
   for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
     for (int flags = 0; flags < 8; ++flags) {
       FakeDrawTarget draw;
@@ -4354,8 +4369,8 @@ void testTallKeyboardSizing() {
       props.numberRow = flags & 4;
       screen.qwertyKeyboard(props, 0, LayoutAnchor::Bottom);
       const int rows = props.numberRow && !props.symbols ? 5 : 4;
-      const int height = rows == 5 ? 416 : 346;
-      const int rowHeight = rows == 5 ? 76 : 80;
+      const int height = rows == 5 ? 312 : 250;
+      const int rowHeight = 56;
       CHECK_EQ(screen.contentRect().bottom(), 780 - height);
       CHECK_EQ(screen.contentRect().x, 30); // other content keeps its margins
       CHECK_EQ(screen.contentRect().width, 420);
@@ -4394,10 +4409,19 @@ void testTallKeyboardSizing() {
   props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
   props.keyAction = 1;
   screen.keyboard(props, 0, LayoutAnchor::Bottom);
-  CHECK_EQ(screen.contentRect().bottom(), 810 - 416);
-  CHECK_EQ(interactions.data()[0].rect.height, 76);
+  CHECK_EQ(screen.contentRect().bottom(), 810 - 312);
+  CHECK_EQ(interactions.data()[0].rect.height, 56);
   CHECK(interactions.data()[0].rect.x >= 10);
   CHECK(interactions.data()[9].rect.right() <= 490);
+
+  FakeDrawTarget shortDraw;
+  DeviceContext shortDevice = makeDevice(800, 300);
+  InteractionBuffer<64> shortInteractions;
+  Frame<64> shortFrame(shortDraw, shortDevice, input, shortInteractions);
+  Screen<64> shortScreen(shortFrame, theme);
+  shortScreen.keyboard(props, 0, LayoutAnchor::Bottom);
+  CHECK_EQ(shortScreen.contentRect().bottom(), 100);
+  CHECK_EQ(shortInteractions.data()[0].rect.height, 33);
 }
 
 void testScreenContentMarginCoordinateSpaces() {
@@ -5634,7 +5658,7 @@ int main() {
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
   testScreenKeyboardUsesResponsiveHeight();
-  testTallKeyboardSizing();
+  testResponsiveKeyboardSizing();
   testKeyboardTypography();
   testKeyboardFullSizeHighlight();
   testCompactKeyboardAltLabelStaysInsideKey();

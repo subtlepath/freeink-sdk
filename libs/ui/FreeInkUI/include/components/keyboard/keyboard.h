@@ -126,14 +126,19 @@ struct KeyboardProps {
   bool uniformKeyWidth = true;
 };
 
-// Preferred total height for touch entry. Size each row independently so a
-// dedicated number row adds height instead of compressing every key. Callers
-// using the low-level Rect API can use this when reserving their keyboard area.
+// Preferred total height for touch entry. Match the height of a character key
+// to roughly 4/3 of a key in a ten-key row, capped at 56px (the normal reader
+// keyboard height). A dedicated number row adds height instead of compressing
+// the other rows. Callers using the low-level Rect API can reserve this height.
 inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount, Insets padding = Insets{4, 4, 4, 4},
-                                       int16_t rowGap = 6, int16_t minRowHeight = 64) {
+                                       int16_t rowGap = 6, int16_t minRowHeight = 28, int16_t keyGap = 6) {
   if (rowCount == 0) return 0;
-  int32_t rowHeight = width / 6;
+  const int32_t usableWidth = static_cast<int32_t>(width) - padding.left - padding.right -
+                              (keyGap > 0 ? keyGap : 0) * 9;
+  int32_t rowHeight = usableWidth > 0 ? (usableWidth * 4 + 15) / 30 : 0;
   if (rowHeight < minRowHeight) rowHeight = minRowHeight;
+  const int16_t maxRowHeight = minRowHeight > 56 ? minRowHeight : 56;
+  if (rowHeight > maxRowHeight) rowHeight = maxRowHeight;
   if (rowHeight < 1) rowHeight = 1;
   const int32_t height =
       rowHeight * rowCount + (rowGap > 0 ? rowGap : 0) * (rowCount - 1) + padding.top + padding.bottom;

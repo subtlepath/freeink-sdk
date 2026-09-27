@@ -732,13 +732,13 @@ qwertyKeyboard(ui, keyboardRect, keyboard);
 
 `Screen::keyboard` and `Screen::qwertyKeyboard` use the full safe-area width,
 including the space outside text-content side margins. Their automatic height
-allocates at least 64px per row, scaling to 80px on a 480px-wide screen: 346px
-for four rows, or 432px with a dedicated number row. On short screens the total
-is capped at 50% of the safe height plus the extra row spacing, and the remaining
-content space. An explicit
-height still overrides automatic sizing. Low-level calls with a `Rect` use that
-rectangle exactly; reserve `keyboardPreferredHeight(width, layout.rowCount)`
-pixels to get the same taller rows there.
+sizes each row to about 4/3 of a ten-key letter key's width, up to 56px. At
+480px or 800px wide, that gives 56px rows: 250px for the default four rows, or
+312px when `numberRow` is enabled. Narrower screens scale the row height down.
+On short screens, the keyboard is capped at two-thirds of the safe height so
+the entry field retains space. An explicit height still overrides automatic
+sizing. Low-level calls with a `Rect` use that rectangle exactly; reserve
+`keyboardPreferredHeight(width, layout.rowCount)` pixels for the same sizing.
 
 Keyboard keys default to white with a 1px black outline on a light gray dithered
 panel. The panel has 4px padding, keys have 6px gaps in both directions, and
