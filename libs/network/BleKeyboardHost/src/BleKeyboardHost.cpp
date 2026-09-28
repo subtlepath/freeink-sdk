@@ -76,6 +76,20 @@ uint8_t g_reconnectIdx = 0;
 // connect() and begin() turn it back on; a link the peer drops leaves it on.
 bool g_autoReconnect = true;
 
+// armSelectedPeerReconnect(): while an address is set, auto-reconnect tries only
+// that peer, and only while attempts and the window last. Guarded by g_mux.
+constexpr uint8_t kSelectedReconnectAttempts = 6;
+constexpr uint32_t kSelectedReconnectWindowMs = 120000;
+char g_selectedAddr[18] = {0};
+uint8_t g_selectedAttemptsLeft = 0;
+uint32_t g_selectedStartedMs = 0;
+
+// Caller holds g_mux.
+void clearSelectedPlanLocked() {
+  g_selectedAddr[0] = '\0';
+  g_selectedAttemptsLeft = 0;
+}
+
 // HID Report Map hints (parsed once per connection in setupHid). Many BLE
 // page-turner remotes are NOT plain boot keyboards: they place their code on the
 // Consumer Control page (0x0C) or at a non-standard byte offset. These hints, plus
@@ -370,6 +384,9 @@ bool BleKeyboardHost::begin(const char* hostName) {
   // place: re-initializing now would pull NimBLE out from under them.
   if (g_teardownPending.load()) return false;
   g_autoReconnect = true;
+  portENTER_CRITICAL(&g_mux);
+  clearSelectedPlanLocked();
+  portEXIT_CRITICAL(&g_mux);
 
 #if FREEINK_BLE_HID_SCAN_DEBUG
   Serial.printf("[BleHid] begin: host='%s' bonds=%u\n", hostName ? hostName : "FreeInk", bondCount_);
@@ -473,6 +490,9 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
   if (!begun_ && !g_teardownPending.load()) return true;
   const uint32_t budgetMs = timeoutMs > kMaxTeardownTimeoutMs ? kMaxTeardownTimeoutMs : timeoutMs;
   const uint32_t startMs = millis();
+  portENTER_CRITICAL(&g_mux);
+  clearSelectedPlanLocked();
+  portEXIT_CRITICAL(&g_mux);
   if (begun_) {
     begun_ = false;
     g_teardownPending.store(true);
@@ -525,6 +545,7 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
   ringHead_ = 0;
   ringTail_ = 0;
   heldUsage_ = 0;
+  clearSelectedPlanLocked();
   portEXIT_CRITICAL(&g_mux);
   connAddr_[0] = '\0';
   g_teardownPending.store(false);
@@ -555,8 +576,20 @@ void BleKeyboardHost::poll() {
     g_lastGenericCode = 0;
   }
 
-  // Auto-reconnect to a bonded HID peripheral.
-  if (g_autoReconnect && !connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
+  // Auto-reconnect to a bonded HID peripheral: the selected one while a plan is
+  // armed (never another bond), otherwise each bond in turn.
+  char selected[sizeof(g_selectedAddr)] = {0};
+  portENTER_CRITICAL(&g_mux);
+  const bool planArmed = g_selectedAddr[0] != '\0';
+  if (planArmed && g_selectedAttemptsLeft > 0 && millis() - g_selectedStartedMs < kSelectedReconnectWindowMs &&
+      millis() - g_lastReconnectMs >= kReconnectBackoffMs && !connected_ && !g_connecting && !scanning_) {
+    memcpy(selected, g_selectedAddr, sizeof(selected));
+    --g_selectedAttemptsLeft;
+  }
+  portEXIT_CRITICAL(&g_mux);
+  if (selected[0]) {
+    connectInternal(selected, /*explicitRequest=*/false);
+  } else if (!planArmed && g_autoReconnect && !connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
     const uint32_t now = millis();
     if (now - g_lastReconnectMs > kReconnectBackoffMs) {
       g_lastReconnectMs = now;
@@ -624,9 +657,36 @@ void BleKeyboardHost::releaseScanResults() {
 }
 
 // --- Connection --------------------------------------------------------------
-bool BleKeyboardHost::connect(const char* addr) {
+bool BleKeyboardHost::connect(const char* addr) { return connectInternal(addr, /*explicitRequest=*/true); }
+
+bool BleKeyboardHost::armSelectedPeerReconnect(const char* addr) {
+  if (!addr || strnlen(addr, sizeof(g_selectedAddr)) != sizeof(g_selectedAddr) - 1) return false;
+  if (!begun_ || !g_connTask || connected_ || g_connecting || scanning_) return false;
+  bool bonded = false;
+  for (uint8_t i = 0; i < bondCount_; ++i) {
+    if (strncmp(bonds_[i].addr, addr, sizeof(bonds_[i].addr)) == 0) bonded = true;
+  }
+  if (!bonded) return false;
+  portENTER_CRITICAL(&g_mux);
+  const bool armed = g_selectedAddr[0] == '\0';
+  if (armed) {
+    memcpy(g_selectedAddr, addr, sizeof(g_selectedAddr));
+    g_selectedAttemptsLeft = kSelectedReconnectAttempts;
+    g_selectedStartedMs = millis();
+    g_lastReconnectMs = g_selectedStartedMs - kReconnectBackoffMs;  // the first poll tries at once
+  }
+  portEXIT_CRITICAL(&g_mux);
+  return armed;
+}
+
+bool BleKeyboardHost::connectInternal(const char* addr, const bool explicitRequest) {
   if (!begun_ || !addr || g_connecting) return false;
-  g_autoReconnect = true;
+  if (explicitRequest) {
+    portENTER_CRITICAL(&g_mux);
+    clearSelectedPlanLocked();
+    g_autoReconnect = true;
+    portEXIT_CRITICAL(&g_mux);
+  }
 
   uint8_t type = 0;
   bool knownType = false;
@@ -660,6 +720,9 @@ bool BleKeyboardHost::connect(const char* addr) {
 
 void BleKeyboardHost::disconnect() {
   g_autoReconnect = false;
+  portENTER_CRITICAL(&g_mux);
+  clearSelectedPlanLocked();
+  portEXIT_CRITICAL(&g_mux);
   if (g_client && g_client->isConnected()) g_client->disconnect();
 }
 
@@ -674,6 +737,9 @@ void BleKeyboardHost::forget(const char* addr) {
   for (uint8_t i = 0; i < bondCount_; ++i) {
     if (strncmp(bonds_[i].addr, addr, sizeof(bonds_[i].addr)) != 0) continue;
     NimBLEDevice::deleteBond(NimBLEAddress(std::string(bonds_[i].addr), bonds_[i].addrType));
+    portENTER_CRITICAL(&g_mux);
+    if (strncmp(g_selectedAddr, addr, sizeof(g_selectedAddr)) == 0) clearSelectedPlanLocked();
+    portEXIT_CRITICAL(&g_mux);
     for (uint8_t j = i + 1; j < bondCount_; ++j) bonds_[j - 1] = bonds_[j];
     bondCount_--;
     persistBonds();
@@ -1008,10 +1074,17 @@ void BleKeyboardHost::onLinkUp(const char* addr, const char* name, uint8_t type)
 }
 
 void BleKeyboardHost::onLinkDown() {
+  portENTER_CRITICAL(&g_mux);
+  // The selected peer's link dropped on its own (disconnect() clears the plan
+  // first): a fresh bounded plan brings it back.
+  if (connected_ && g_selectedAddr[0] && strncmp(g_selectedAddr, connAddr_, sizeof(g_selectedAddr)) == 0) {
+    g_selectedAttemptsLeft = kSelectedReconnectAttempts;
+    g_selectedStartedMs = millis();
+    g_lastReconnectMs = g_selectedStartedMs;
+  }
   connected_ = false;
   connecting_ = false;
   connAddr_[0] = '\0';
-  portENTER_CRITICAL(&g_mux);
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);
   // A link that drops while a key is down never delivers its release. Forget the
@@ -1028,6 +1101,7 @@ void BleKeyboardHost::onConnectFailed(const char* reason) {
   connectFailure_[sizeof(connectFailure_) - 1] = '\0';
   connectFailed_ = true;
   heldUsage_ = 0;
+  if (g_selectedAddr[0]) g_lastReconnectMs = millis();  // the next attempt waits from the failure
   portEXIT_CRITICAL(&g_mux);
 }
 
@@ -1108,6 +1182,7 @@ const DiscoveredDevice& BleKeyboardHost::device(uint8_t) const {
 }
 void BleKeyboardHost::releaseScanResults() {}
 bool BleKeyboardHost::connect(const char*) { return false; }
+bool BleKeyboardHost::armSelectedPeerReconnect(const char*) { return false; }
 void BleKeyboardHost::disconnect() {}
 const PairedHidDevice& BleKeyboardHost::paired(uint8_t) const {
   static const PairedHidDevice kEmpty{};

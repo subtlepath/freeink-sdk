@@ -16,6 +16,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+#include <vector>
+
 #include "BleKeyboardHost.h"
 
 namespace fakeble {
@@ -62,6 +65,10 @@ bool waitUntilHeld(Stage stage, uint32_t timeoutMs = 1000);
 bool taskDeletedWhileHeld();
 
 size_t connectCalls();
+// Addresses the host asked NimBLE to connect to, in order.
+std::vector<std::string> connectAddresses();
+// While set, every GAP connect fails with a timeout (the peer is off or away).
+void failConnects(bool fail);
 unsigned long clockMs();
 void advanceMillis(uint32_t ms);
 

@@ -177,6 +177,8 @@ struct FakeState {
   bool initialized = false;
   int lastError = 0;
   size_t connectCalls = 0;
+  std::vector<std::string> connectAddresses;
+  bool failConnects = false;
   std::vector<std::unique_ptr<NimBLERemoteCharacteristic>> owned;
   std::vector<NimBLERemoteCharacteristic*> chars;
   NimBLERemoteService service;
@@ -257,6 +259,8 @@ struct FakeState {
     initialized = false;
     lastError = 0;
     connectCalls = 0;
+    connectAddresses.clear();
+    failConnects = false;
     delete client;
     client = nullptr;
     scan = NimBLEScan();
@@ -355,6 +359,8 @@ bool clientExists() { return state().client != nullptr; }
 
 bool taskDeletedWhileHeld() { return g_deletedWhileHeld; }
 size_t connectCalls() { return state().connectCalls; }
+std::vector<std::string> connectAddresses() { return state().connectAddresses; }
+void failConnects(bool fail) { state().failConnects = fail; }
 unsigned long clockMs() { return g_clockMs.load(); }
 void advanceMillis(uint32_t ms) { g_clockMs += ms; }
 
@@ -390,9 +396,10 @@ const std::vector<NimBLERemoteCharacteristic*>& NimBLERemoteService::getCharacte
   return state().chars;
 }
 
-bool NimBLEClient::connect(const NimBLEAddress&) {
+bool NimBLEClient::connect(const NimBLEAddress& address) {
   state().connectCalls++;
-  if (holdHere(Stage::Connect)) {
+  state().connectAddresses.push_back(address.toString());
+  if (holdHere(Stage::Connect) || state().failConnects) {
     state().lastError = BLE_HS_ETIMEOUT;
     return false;
   }

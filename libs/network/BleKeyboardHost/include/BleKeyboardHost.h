@@ -126,6 +126,15 @@ class BleKeyboardHost {
   // Begin an async connect to a scanned/bonded address. isConnected() flips once
   // the link is encrypted and the HID input report is subscribed.
   bool connect(const char* addr);
+  // Reconnect to one bonded peer only, for a bounded time: at most six attempts,
+  // each four seconds after the last one failed, none started later than 120
+  // seconds after arming, and no fallback to the other bonds. For an app that
+  // knows which remote it wants and should not spend the radio on the others.
+  // Refused (false) for an address that is not bonded, before begin(), while
+  // scanning, connecting or connected, or while a plan is already armed.
+  // connect(), disconnect(), end(), and forget() of that peer cancel the plan; a
+  // link to the peer that later drops on its own starts a fresh one.
+  bool armSelectedPeerReconnect(const char* addr);
   // Drop the link and pause auto-reconnect until the next connect() or begin().
   void disconnect();
   bool isConnected() const { return connected_; }
@@ -158,6 +167,7 @@ class BleKeyboardHost {
   void onPairingPasskey(uint32_t passkey);
 
  private:
+  bool connectInternal(const char* addr, bool explicitRequest);
   void enqueue(const KeyEvent& ev);    // ring push (spinlock-guarded)
   void emitUsage(uint8_t usage, uint8_t mods);  // translate + enqueue
   void persistBonds();

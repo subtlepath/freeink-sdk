@@ -25,6 +25,7 @@ int checksFailed = 0;
 using fakeble::host;
 
 constexpr const char* kRemote = "AA:BB:CC:DD:EE:01";
+constexpr const char* kSecondRemote = "AA:BB:CC:DD:EE:02";
 
 // HID 1.11 Appendix B.1 boot keyboard: modifiers, reserved byte, six key bytes.
 constexpr uint8_t kKeyboardMap[] = {
@@ -319,6 +320,117 @@ void testEndWaitsForTheClientToFinishDisconnecting() {
   CHECK(!host().isStopping());
 }
 
+// Both remotes bonded, nothing connected, every later connect failing, and the
+// connect log cleared: the start of a reader visit with the remotes switched off.
+void bondTwoRemotesThenSwitchThemOff() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  host().disconnect();
+  CHECK(fakeble::connectTo(kSecondRemote));
+  host().disconnect();
+  CHECK(host().pairedCount() == 2);
+  CHECK(host().end());
+  fakeble::failConnects(true);
+  CHECK(fakeble::beginHost());
+  const size_t before = fakeble::connectAddresses().size();
+  CHECK(before == 2);
+}
+
+// One poll, then wait for the connection task to finish what it started.
+void pollOnce() {
+  host().poll();
+  CHECK(fakeble::waitForWorkerIdle());
+}
+
+size_t attemptsAt(const char* addr) {
+  size_t n = 0;
+  const std::vector<std::string> all = fakeble::connectAddresses();
+  for (size_t i = 2; i < all.size(); ++i) n += all[i] == addr ? 1 : 0;
+  return n;
+}
+
+void testSelectedPeerIsTheOnlyOneRetriedSixTimes() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);  // at once, not after the first backoff
+  fakeble::advanceMillis(3999);
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);
+  for (int i = 0; i < 12; ++i) {
+    fakeble::advanceMillis(4000);
+    pollOnce();
+  }
+  CHECK(attemptsAt(kSecondRemote) == 6);
+  CHECK(attemptsAt(kRemote) == 0);  // no fallback to the other bond
+}
+
+void testSelectedPlanStartsNothingAfterItsWindow() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  pollOnce();
+  fakeble::advanceMillis(120000);
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);
+  CHECK(attemptsAt(kRemote) == 0);
+}
+
+void testArmIsRefusedWhenItCannotApply() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(!host().armSelectedPeerReconnect(nullptr));
+  CHECK(!host().armSelectedPeerReconnect("AA:BB"));
+  CHECK(!host().armSelectedPeerReconnect("AA:BB:CC:DD:EE:99"));  // not bonded
+  host().startScan(1000);
+  CHECK(!host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(host().isScanning());
+  host().stopScan();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(!host().armSelectedPeerReconnect(kSecondRemote));  // one plan at a time
+
+  fakeble::failConnects(false);
+  CHECK(fakeble::connectTo(kRemote));
+  CHECK(!host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(host().isConnected());
+}
+
+void testConnectAndDisconnectCancelThePlan() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitForWorkerIdle());
+  fakeble::advanceMillis(4001);
+  pollOnce();
+  // The default turn over the bonds again (first bond first), not the plan.
+  CHECK(attemptsAt(kSecondRemote) == 0);
+  CHECK(attemptsAt(kRemote) == 2);
+
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  host().disconnect();
+  fakeble::advanceMillis(4001);
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 0);
+  CHECK(attemptsAt(kRemote) == 0);  // disconnect() also pauses auto-reconnect
+}
+
+void testSelectedPeerThatDropsGetsAFreshPlan() {
+  bondTwoRemotesThenSwitchThemOff();
+  fakeble::failConnects(false);
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  pollOnce();
+  CHECK(host().isConnected());
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+  fakeble::advanceMillis(200000);  // long past the first plan's window
+  fakeble::peerDisconnect();
+  fakeble::advanceMillis(4000);
+  pollOnce();
+  CHECK(host().isConnected());
+  CHECK(attemptsAt(kSecondRemote) == 2);
+  CHECK(attemptsAt(kRemote) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -334,6 +446,11 @@ int main() {
   testEndCancelsAPairingWaitBeforeDeletingTheTask();
   testEndLeavesAStuckTaskAloneAndFinishesLater();
   testEndWaitsForTheClientToFinishDisconnecting();
+  testSelectedPeerIsTheOnlyOneRetriedSixTimes();
+  testSelectedPlanStartsNothingAfterItsWindow();
+  testArmIsRefusedWhenItCannotApply();
+  testConnectAndDisconnectCancelThePlan();
+  testSelectedPeerThatDropsGetsAFreshPlan();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
