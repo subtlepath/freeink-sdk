@@ -92,7 +92,17 @@ class BleKeyboardHost {
   // the user turns Bluetooth off, so memory-hungry work (e.g. EPUB inflate) can
   // allocate again. Bonds persist in NVS; begin() re-inits cleanly afterwards.
   // Must run at normal CPU frequency (controller deinit), like begin().
-  void end();
+  //
+  // Returns true once the stack is down. It waits at most timeoutMs (capped at
+  // 2 s) for the connection task to leave a connect, pairing or discovery wait
+  // and for the link to finish closing. When that takes longer, nothing is
+  // deleted under NimBLE: end() returns false, isStopping() stays true and a
+  // later end() carries on from there. end(0) never waits.
+  bool end(uint32_t timeoutMs = 1000);
+
+  // True from an end() that returned false until one returns true. begin() is
+  // refused meanwhile.
+  bool isStopping() const;
 
   // Pump per main-loop iteration: drives auto-reconnect and key auto-repeat.
   // Cheap; never blocks.

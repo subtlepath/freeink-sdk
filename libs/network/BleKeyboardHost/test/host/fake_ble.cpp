@@ -53,6 +53,7 @@ struct Gate {
   fakeble::Stage configured = fakeble::Stage::None;
   fakeble::Stage active = fakeble::Stage::None;
   bool released = false;
+  bool stubborn = false;
   Task* heldTask = nullptr;
 };
 
@@ -78,6 +79,7 @@ bool holdHere(fakeble::Stage stage) {
   g.cv.wait(lock, [&g] { return g.released; });
   g.active = fakeble::Stage::None;
   g.configured = fakeble::Stage::None;
+  g.stubborn = false;
   g.heldTask = nullptr;
   lock.unlock();
   // A task deleted while it sat in this wait must never run again: on the device
@@ -90,7 +92,7 @@ void releaseHeld(bool onlyConnectStage) {
   Gate& g = gate();
   {
     std::lock_guard<std::mutex> guard(g.m);
-    if (g.active == fakeble::Stage::None) return;
+    if (g.active == fakeble::Stage::None || g.stubborn) return;
     if (onlyConnectStage && g.active != fakeble::Stage::Connect) return;
     g.released = true;
   }
@@ -181,6 +183,7 @@ struct FakeState {
   NimBLEClient* client = nullptr;
   NimBLEScan scan;
   std::map<std::string, std::vector<uint8_t>> nvs;
+  bool lingerOnDisconnect = false;
 
   NimBLERemoteCharacteristic* at(int index) {
     if (index < 0 || static_cast<size_t>(index) >= chars.size()) return nullptr;
@@ -239,6 +242,15 @@ struct FakeState {
 
   size_t retained() const { return scan.retained_.size(); }
 
+  void finishDisconnect() {
+    lingerOnDisconnect = false;
+    if (client != nullptr) client->disconnecting_ = false;
+  }
+
+  NimBLEClient* disconnectedClient() const {
+    return client != nullptr && !client->connected_ && !client->disconnecting_ ? client : nullptr;
+  }
+
   void reset() {
     owned.clear();
     chars.clear();
@@ -249,6 +261,7 @@ struct FakeState {
     client = nullptr;
     scan = NimBLEScan();
     nvs.clear();
+    lingerOnDisconnect = false;
   }
 };
 
@@ -260,11 +273,13 @@ FakeState& state() {
 freeink::BleKeyboardHost& host() { return freeink::BleKeyboardHost::getInstance(); }
 
 void resetWorld() {
-  if (host().isRunning()) host().end();
-  releaseHeld(false);
+  releaseHold();
+  finishDisconnect();
+  if (host().isRunning() || host().isStopping()) host().end();
   {
     std::lock_guard<std::mutex> guard(gate().m);
     gate().configured = Stage::None;
+    gate().stubborn = false;
   }
   g_deletedWhileHeld = false;
   state().reset();
@@ -318,6 +333,26 @@ bool waitUntilHeld(Stage stage, uint32_t timeoutMs) {
   return g.cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&g, stage] { return g.active == stage; });
 }
 
+void holdStubbornlyAt(Stage stage) {
+  std::lock_guard<std::mutex> guard(gate().m);
+  gate().configured = stage;
+  gate().stubborn = true;
+}
+
+void releaseHold() {
+  {
+    std::lock_guard<std::mutex> guard(gate().m);
+    gate().stubborn = false;
+  }
+  releaseHeld(false);
+}
+
+void lingerOnDisconnect() { state().lingerOnDisconnect = true; }
+
+void finishDisconnect() { state().finishDisconnect(); }
+
+bool clientExists() { return state().client != nullptr; }
+
 bool taskDeletedWhileHeld() { return g_deletedWhileHeld; }
 size_t connectCalls() { return state().connectCalls; }
 unsigned long clockMs() { return g_clockMs.load(); }
@@ -370,6 +405,7 @@ bool NimBLEClient::disconnect() {
   releaseHeld(false);
   if (!connected_) return true;
   connected_ = false;
+  disconnecting_ = state().lingerOnDisconnect;
   if (callbacks_ != nullptr) callbacks_->onDisconnect(this, 0x16);
   return true;
 }
@@ -439,6 +475,7 @@ bool NimBLEDevice::deleteClient(NimBLEClient* client) {
   state().client = nullptr;
   return true;
 }
+NimBLEClient* NimBLEDevice::getDisconnectedClient() { return state().disconnectedClient(); }
 bool NimBLEDevice::deleteBond(const NimBLEAddress&) { return true; }
 
 // --- Preferences (in-memory NVS) ------------------------------------------------

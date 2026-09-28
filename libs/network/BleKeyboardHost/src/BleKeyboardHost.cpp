@@ -25,6 +25,7 @@ BleKeyboardHost& BleKeyboardHost::getInstance() {
 #include <NimBLEDevice.h>
 #include <Preferences.h>
 
+#include <atomic>
 #include <cstring>
 #include <string>
 
@@ -48,6 +49,8 @@ constexpr uint32_t kReleaseTimeoutMs = 150;
 constexpr uint32_t kReconnectBackoffMs = 4000;
 constexpr uint32_t kConnectTimeoutMs = 8000;
 constexpr uint32_t kTeardownConnectWaitMs = kConnectTimeoutMs + 500;
+constexpr uint32_t kMaxTeardownTimeoutMs = 2000;
+constexpr uint32_t kTeardownPollMs = 10;
 constexpr size_t kScanDebugPayloadMax = 31;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -61,6 +64,11 @@ volatile bool g_connecting = false;
 char g_targetAddr[18] = {0};
 uint8_t g_targetType = 0;
 bool g_targetTryAltType = false;
+// Set by an end() that could not finish; cleared by the one that does.
+std::atomic<bool> g_teardownPending{false};
+// False while a link attempt or a link exists; set again by NimBLE's disconnect
+// callback. NimBLE only lets go of the client once that callback has run.
+std::atomic<bool> g_disconnectObserved{true};
 
 uint32_t g_lastReconnectMs = 0;
 uint8_t g_reconnectIdx = 0;
@@ -81,6 +89,13 @@ uint8_t g_lastGenericCode = 0;        // last non-zero code seen on the generic 
 volatile uint32_t g_lastReportMs = 0;  // millis() of the last HID notification (stale-release)
 
 BleKeyboardHost& self() { return BleKeyboardHost::getInstance(); }
+
+// The client can be deleted: its disconnect callback ran and NimBLE reports it
+// DISCONNECTED. deleteClient() on a CONNECTED or DISCONNECTING client only
+// defers the delete, and a deinit() after that leaks NimBLE's client slot.
+bool clientReleased() {
+  return g_disconnectObserved.load() && NimBLEDevice::getDisconnectedClient() == g_client;
+}
 
 // Scan a HID Report Map descriptor for Usage Page (0x05 nn) items and note whether
 // a keyboard (0x07) or consumer (0x0C) page is present, plus a heuristic byte index
@@ -226,7 +241,9 @@ void doConnect(const char* addrStr, uint8_t type) {
   }
   NimBLEDevice::getScan()->stop();
   NimBLEAddress addr(std::string(addrStr), type);
+  g_disconnectObserved.store(false);
   if (!g_client->connect(addr)) {
+    g_disconnectObserved.store(true);
 #if FREEINK_BLE_HID_SCAN_DEBUG
     Serial.printf("[BleHid] connect failed: %s type=%u err=%d\n", addrStr, type, g_client->getLastError());
 #endif
@@ -239,7 +256,9 @@ void doConnect(const char* addrStr, uint8_t type) {
     Serial.printf("[BleHid] retry connect: %s type=%u\n", addrStr, type);
 #endif
     addr = NimBLEAddress(std::string(addrStr), type);
+    g_disconnectObserved.store(false);
     if (!g_client->connect(addr)) {
+      g_disconnectObserved.store(true);
 #if FREEINK_BLE_HID_SCAN_DEBUG
       Serial.printf("[BleHid] connect failed: %s type=%u err=%d\n", addrStr, type, g_client->getLastError());
 #endif
@@ -318,7 +337,10 @@ class ScanCB : public NimBLEScanCallbacks {
 };
 
 class ClientCB : public NimBLEClientCallbacks {
-  void onDisconnect(NimBLEClient*, int) override { self().onLinkDown(); }
+  void onDisconnect(NimBLEClient*, int) override {
+    g_disconnectObserved.store(true);
+    self().onLinkDown();
+  }
   void onPassKeyEntry(NimBLEConnInfo& connInfo) override { NimBLEDevice::injectPassKey(connInfo, 123456); }
   uint32_t onPassKeyDisplay(NimBLEConnInfo&) override {
     const uint32_t passkey = NimBLEDevice::getSecurityPasskey();
@@ -344,6 +366,9 @@ ClientCB g_clientCb;
 // --- Lifecycle ---------------------------------------------------------------
 bool BleKeyboardHost::begin(const char* hostName) {
   if (begun_) return true;
+  // An unfinished end() left the connection task, the client or the stack in
+  // place: re-initializing now would pull NimBLE out from under them.
+  if (g_teardownPending.load()) return false;
   g_autoReconnect = true;
 
 #if FREEINK_BLE_HID_SCAN_DEBUG
@@ -444,58 +469,51 @@ bool BleKeyboardHost::begin(const char* hostName) {
   return true;
 }
 
-void BleKeyboardHost::end() {
-  if (!begun_) return;
-  begun_ = false;
-
-  NimBLEScan* scan = NimBLEDevice::getScan();
-  if (scan && scan->isScanning()) scan->stop();
-
-  // If auto-reconnect is in the middle of g_client->connect(), do not delete the
-  // worker or deinit NimBLE under it. Let the blocking connect path unwind first;
-  // killing it inside NimBLE leaves host/controller state inconsistent and can
-  // crash on Bluetooth-off, sleep, or the next begin().
-  // Cancel on every pass: the worker can bring the link up after the first try.
-  const uint32_t waitStart = millis();
-  while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
-    cancelPendingConnect();
-    vTaskDelay(pdMS_TO_TICKS(20));
+bool BleKeyboardHost::end(uint32_t timeoutMs) {
+  if (!begun_ && !g_teardownPending.load()) return true;
+  const uint32_t budgetMs = timeoutMs > kMaxTeardownTimeoutMs ? kMaxTeardownTimeoutMs : timeoutMs;
+  const uint32_t startMs = millis();
+  if (begun_) {
+    begun_ = false;
+    g_teardownPending.store(true);
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    if (scan && scan->isScanning()) scan->stop();
   }
 
-  // Kill the connection worker once it is idle so it can't run doConnect() against
-  // the stack while we tear it down.
+  // If the connection task is inside a connect, pairing or GATT wait, do not
+  // delete it or deinit NimBLE under it: killing it there leaves NimBLE holding a
+  // dead task and can crash on Bluetooth-off, sleep, or the next begin(). Cancel
+  // on every pass: the task can bring the link up after the first cancel.
+  while (g_connecting) {
+    cancelPendingConnect();
+    if (millis() - startMs >= budgetMs) return false;
+    vTaskDelay(pdMS_TO_TICKS(kTeardownPollMs));
+  }
   if (g_connTask) {
     vTaskDelete(g_connTask);
     g_connTask = nullptr;
   }
-  g_connecting = false;
 
-  // Close the link and explicitly delete the client BEFORE deinit. This is critical:
-  // NimBLE keeps a fixed-size client array (m_pClients) that survives deinit/init, and
-  // deleteClient() DEFERS deletion while the client is CONNECTED/DISCONNECTING (it sets
-  // a flag and disconnects async). deinit() then tears down the host before that
-  // deferred delete runs, so the slot leaks — and the next begin()'s createClient()
-  // returns null forever (BLE can't restart). Waiting for a real disconnect, then
-  // deleting while DISCONNECTED, frees the slot for good.
+  // Close the link and delete the client BEFORE deinit. NimBLE keeps a fixed-size
+  // client array that survives deinit/init, and deleteClient() only DEFERS the
+  // delete while the client is CONNECTED/DISCONNECTING. deinit() would then tear
+  // the host down before that deferred delete runs, the slot leaks, and the next
+  // begin()'s createClient() returns null for good.
   if (g_client) {
-    if (g_client->isConnected()) g_client->disconnect();
-    for (int i = 0; i < 60 && g_client->isConnected(); ++i) {
-      vTaskDelay(pdMS_TO_TICKS(10));
+    while (!clientReleased()) {
+      if (g_client->isConnected()) g_client->disconnect();
+      if (millis() - startMs >= budgetMs) return false;
+      vTaskDelay(pdMS_TO_TICKS(kTeardownPollMs));
     }
-    vTaskDelay(pdMS_TO_TICKS(150));  // let DISCONNECTING settle to DISCONNECTED
     NimBLEDevice::deleteClient(g_client);
     g_client = nullptr;
   }
 
   // Free the NimBLE host + BT controller memory back to the heap. Bonds live in
-  // NVS and survive this; begin() re-initializes cleanly. Retry once if the stack
-  // didn't fully tear down (stop raced something), so re-init isn't a no-op.
+  // NVS and survive this. A deinit that did not complete is retried by the next
+  // end(), so the next begin() never inherits a half-initialized stack.
   NimBLEDevice::deinit(true);
-  if (NimBLEDevice::isInitialized()) {
-    vTaskDelay(pdMS_TO_TICKS(50));
-    NimBLEDevice::deinit(true);
-  }
-  g_connecting = false;
+  if (NimBLEDevice::isInitialized()) return false;
   g_lastGenericCode = 0;
   g_lastReportMs = 0;
 
@@ -509,7 +527,11 @@ void BleKeyboardHost::end() {
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);
   connAddr_[0] = '\0';
+  g_teardownPending.store(false);
+  return true;
 }
+
+bool BleKeyboardHost::isStopping() const { return g_teardownPending.load(); }
 
 void BleKeyboardHost::poll() {
   if (!begun_) return;
@@ -1075,7 +1097,8 @@ void BleKeyboardHost::persistBonds() {
 namespace freeink {
 
 bool BleKeyboardHost::begin(const char*) { return false; }
-void BleKeyboardHost::end() {}
+bool BleKeyboardHost::end(uint32_t) { return true; }
+bool BleKeyboardHost::isStopping() const { return false; }
 void BleKeyboardHost::poll() {}
 void BleKeyboardHost::startScan(uint32_t) {}
 void BleKeyboardHost::stopScan() {}

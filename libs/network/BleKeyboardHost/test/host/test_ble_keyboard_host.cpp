@@ -254,6 +254,71 @@ void testConnectedAddressFollowsTheLink() {
   CHECK(std::strcmp(host().connectedAddr(), "") == 0);
 }
 
+void testEndCancelsAPairingWaitBeforeDeletingTheTask() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  fakeble::holdAt(fakeble::Stage::Security);
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Security));
+
+  CHECK(host().end(1000));
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(!host().isStopping());
+  CHECK(!fakeble::clientExists());
+  CHECK(!NimBLEDevice::isInitialized());
+}
+
+void testEndLeavesAStuckTaskAloneAndFinishesLater() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  fakeble::holdStubbornlyAt(fakeble::Stage::Connect);
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Connect));
+
+  CHECK(!host().end(0));
+  CHECK(!host().isRunning());
+  CHECK(host().isStopping());
+  CHECK(!host().end(100));
+  CHECK(host().isStopping());
+  CHECK(fakeble::clientExists());
+  CHECK(NimBLEDevice::isInitialized());
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(!fakeble::beginHost());  // nothing may re-initialize under the live task
+
+  fakeble::releaseHold();
+  CHECK(host().end(1000));
+  CHECK(!host().isStopping());
+  CHECK(!fakeble::clientExists());
+  CHECK(!NimBLEDevice::isInitialized());
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(fakeble::beginHost());
+  CHECK(host().end());
+}
+
+void testEndWaitsForTheClientToFinishDisconnecting() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+
+  fakeble::lingerOnDisconnect();
+  CHECK(!host().end(0));
+  CHECK(!host().isConnected());
+  CHECK(host().isStopping());
+  CHECK(fakeble::clientExists());
+  CHECK(NimBLEDevice::isInitialized());
+  CHECK(!host().end(50));
+  CHECK(fakeble::clientExists());
+
+  fakeble::finishDisconnect();
+  CHECK(host().end(0));
+  CHECK(!fakeble::clientExists());
+  CHECK(!NimBLEDevice::isInitialized());
+  CHECK(!host().isStopping());
+}
+
 }  // namespace
 
 int main() {
@@ -266,6 +331,9 @@ int main() {
   testScanKeepsNoAdvertiserInNimble();
   testKeyHeldAcrossLinkDropIsPressedAgain();
   testConnectedAddressFollowsTheLink();
+  testEndCancelsAPairingWaitBeforeDeletingTheTask();
+  testEndLeavesAStuckTaskAloneAndFinishesLater();
+  testEndWaitsForTheClientToFinishDisconnecting();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

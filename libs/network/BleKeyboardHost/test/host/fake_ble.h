@@ -46,6 +46,16 @@ void advertise(const char* addr, const char* name);
 size_t retainedScanResults();
 
 void holdAt(Stage stage);
+// Holds at `stage` and ignores GAP cancels and disconnects there, like a NimBLE
+// wait that does not come back in time; only releaseHold() ends it.
+void holdStubbornlyAt(Stage stage);
+void releaseHold();
+// The next link teardown delivers the disconnect callback but leaves the client
+// DISCONNECTING (not yet reported by getDisconnectedClient) until
+// finishDisconnect().
+void lingerOnDisconnect();
+void finishDisconnect();
+bool clientExists();
 bool waitUntilHeld(Stage stage, uint32_t timeoutMs = 1000);
 // True once vTaskDelete() was called on the connection task while it was held
 // inside a NimBLE wait.
