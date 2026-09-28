@@ -508,6 +508,7 @@ void BleKeyboardHost::end() {
   ringTail_ = 0;
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);
+  connAddr_[0] = '\0';
 }
 
 void BleKeyboardHost::poll() {
@@ -936,6 +937,11 @@ void BleKeyboardHost::onLinkUp(const char* addr, const char* name, uint8_t type)
       }
     }
   }
+  connAddr_[0] = '\0';
+  if (addr) {
+    strncpy(connAddr_, addr, sizeof(connAddr_) - 1);
+    connAddr_[sizeof(connAddr_) - 1] = '\0';
+  }
   connName_[0] = '\0';
   if (resolved) {
     strncpy(connName_, resolved, sizeof(connName_) - 1);
@@ -982,6 +988,7 @@ void BleKeyboardHost::onLinkUp(const char* addr, const char* name, uint8_t type)
 void BleKeyboardHost::onLinkDown() {
   connected_ = false;
   connecting_ = false;
+  connAddr_[0] = '\0';
   portENTER_CRITICAL(&g_mux);
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);

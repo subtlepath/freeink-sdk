@@ -121,6 +121,10 @@ class BleKeyboardHost {
   bool isConnected() const { return connected_; }
   bool isConnecting() const { return connecting_; }
   const char* connectedName() const { return connName_; }
+  // Address of the peer on the live link ("" when none). Settings kept per remote
+  // must use this rather than the address the app asked for: auto-reconnect can
+  // bring up another bonded peer.
+  const char* connectedAddr() const { return connAddr_; }
   bool takeConnectFailure(char* out, size_t outLen);
   bool takePairingPasskey(uint32_t& out);
 
@@ -163,6 +167,7 @@ class BleKeyboardHost {
   volatile uint8_t ringHead_ = 0;  // next write
   volatile uint8_t ringTail_ = 0;  // next read
   char connName_[32] = {0};
+  char connAddr_[18] = {0};
   char connectFailure_[48] = {0};
   volatile uint32_t pairingPasskey_ = 0;
   volatile bool connected_ = false;

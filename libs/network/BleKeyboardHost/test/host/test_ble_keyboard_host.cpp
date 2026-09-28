@@ -243,6 +243,17 @@ void testScanKeepsNoAdvertiserInNimble() {
   CHECK(fakeble::retainedScanResults() == 0);
 }
 
+void testConnectedAddressFollowsTheLink() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(std::strcmp(host().connectedAddr(), "") == 0);
+  CHECK(fakeble::connectTo(kRemote));
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+  fakeble::peerDisconnect();
+  CHECK(std::strcmp(host().connectedAddr(), "") == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -254,6 +265,7 @@ int main() {
   testStreamedHeldKeyIsOnePress();
   testScanKeepsNoAdvertiserInNimble();
   testKeyHeldAcrossLinkDropIsPressedAgain();
+  testConnectedAddressFollowsTheLink();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
