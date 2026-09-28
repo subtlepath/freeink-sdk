@@ -41,6 +41,8 @@ constexpr uint16_t kCharProtocolMode = 0x2A4E;
 constexpr uint16_t kCharBootKbdInput = 0x2A22;
 constexpr uint16_t kCharReportMap = 0x2A4B;
 constexpr uint16_t kDescReportReference = 0x2908;
+// Input report characteristics whose Report Reference id is kept for raw edges.
+constexpr uint8_t kMaxInputReportChars = 4;
 
 // Page-turner remotes often stream a held key (or omit a clean release frame). If no
 // report arrives within this window, treat the key as released so one physical press
@@ -101,6 +103,48 @@ bool g_hasConsumerPage = false;
 uint8_t g_preferredByteIndex = 0xFF;  // byte the report map suggests holds the code
 uint8_t g_lastGenericCode = 0;        // last non-zero code seen on the generic path
 volatile uint32_t g_lastReportMs = 0;  // millis() of the last HID notification (stale-release)
+
+// Report id each subscribed Input characteristic declares in its Report Reference
+// descriptor, so a report keeps its identity when its payload has no id byte.
+struct InputReportChar {
+  const NimBLERemoteCharacteristic* chr;
+  uint8_t reportId;
+};
+InputReportChar g_inputChars[kMaxInputReportChars];
+uint8_t g_inputCharCount = 0;
+uint8_t g_notifyReportId = 0;  // report id of the characteristic that just notified
+
+// The part of a report raw edges read: its id and up to 8 payload bytes, with the
+// modifier byte of a keyboard-shaped report cleared (a held Shift is not a button).
+// Same shapes as the key decode: a 9-byte frame leads with its report id, a 7- or
+// 8-byte payload with its modifiers.
+struct RawFrame {
+  uint8_t id;
+  uint8_t bytes[8];
+};
+
+RawFrame rawFrameOf(const uint8_t* data, size_t len) {
+  RawFrame f{};
+  size_t offset = 0;
+  f.id = g_notifyReportId;
+  if (len == 9) {
+    f.id = data[0];
+    offset = 1;
+  }
+  const size_t n = len - offset;
+  for (size_t i = 0; i < n && i < sizeof(f.bytes); ++i) f.bytes[i] = data[offset + i];
+  if (n >= 7) f.bytes[0] = 0;
+  return f;
+}
+
+// The button a frame holds: the first byte that differs from `rest`, as
+// value | index << 8 | id << 16. 0 = the frame is the rest frame (a release).
+uint32_t rawButtonCode(const RawFrame& f, const uint8_t* rest) {
+  for (uint32_t i = 0; i < sizeof(f.bytes); ++i) {
+    if (f.bytes[i] != rest[i]) return f.bytes[i] | i << 8 | static_cast<uint32_t>(f.id) << 16;
+  }
+  return 0;
+}
 
 BleKeyboardHost& self() { return BleKeyboardHost::getInstance(); }
 
@@ -180,7 +224,11 @@ void printPayloadHex(const NimBLEAdvertisedDevice* dev) {
 }
 #endif
 
-void onHidNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+void onHidNotify(NimBLERemoteCharacteristic* chr, uint8_t* data, size_t len, bool) {
+  g_notifyReportId = 0;
+  for (uint8_t i = 0; i < g_inputCharCount; ++i) {
+    if (g_inputChars[i].chr == chr) g_notifyReportId = g_inputChars[i].reportId;
+  }
   self().onReportIngest(data, len);
 }
 
@@ -213,18 +261,25 @@ bool setupHid(NimBLEClient* client) {
   }
 
   bool subscribed = false;
+  g_inputCharCount = 0;
   const std::vector<NimBLERemoteCharacteristic*>& chars = hid->getCharacteristics(true);
   for (NimBLERemoteCharacteristic* c : chars) {
     if (!c) continue;
     if (c->getUUID() != NimBLEUUID(kCharReport) || !c->canNotify()) continue;
-    // Report Reference descriptor (0x2908) byte[1] is the report type: 1=Input.
+    // Report Reference descriptor (0x2908): byte[0] is the report id, byte[1] the
+    // report type (1 = Input).
     bool isInput = true;
+    uint8_t reportId = 0;
     NimBLERemoteDescriptor* ref = c->getDescriptor(NimBLEUUID(kDescReportReference));
     if (ref) {
       NimBLEAttValue v = ref->readValue();
       if (v.size() >= 2 && v[1] != 0x01) isInput = false;
+      if (v.size() >= 1) reportId = v[0];
     }
-    if (isInput && c->subscribe(true, onHidNotify)) subscribed = true;
+    if (isInput && c->subscribe(true, onHidNotify)) {
+      subscribed = true;
+      if (g_inputCharCount < kMaxInputReportChars) g_inputChars[g_inputCharCount++] = {c, reportId};
+    }
   }
 
   if (!subscribed) {  // fallback: boot keyboard input report
@@ -546,7 +601,13 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
   ringTail_ = 0;
   heldUsage_ = 0;
   clearSelectedPlanLocked();
+  rawHead_ = 0;
+  rawTail_ = 0;
+  rawCode_ = 0;
+  rawReports_ = 0;
+  rawDropped_ = false;
   portEXIT_CRITICAL(&g_mux);
+  rawRestCount_ = 0;
   connAddr_[0] = '\0';
   g_teardownPending.store(false);
   return true;
@@ -575,6 +636,18 @@ void BleKeyboardHost::poll() {
     memset(prevKeys_, 0, sizeof(prevKeys_));
     g_lastGenericCode = 0;
   }
+
+  // Silence ends a raw button only on a remote that was streaming it; one that
+  // sends a frame per edge is still holding and sends its own release. The
+  // release is dated by the last frame, which is when the button came up.
+  portENTER_CRITICAL(&g_mux);
+  if (rawCode_ != 0 && rawReports_ > 1 && (millis() - g_lastReportMs) > kReleaseTimeoutMs) {
+    if (!rawDropped_) pushRawLocked(rawCode_, false, g_lastReportMs, 0, 0, 0);
+    rawDropped_ = false;
+    rawCode_ = 0;
+    rawReports_ = 0;
+  }
+  portEXIT_CRITICAL(&g_mux);
 
   // Auto-reconnect to a bonded HID peripheral: the selected one while a plan is
   // armed (never another bond), otherwise each bond in turn.
@@ -760,6 +833,36 @@ bool BleKeyboardHost::popKey(KeyEvent& out) {
   return got;
 }
 
+bool BleKeyboardHost::popRawButton(RawButtonEvent& out) {
+  bool got = false;
+  portENTER_CRITICAL(&g_mux);
+  if (rawHead_ != rawTail_) {
+    out = rawRing_[rawTail_];
+    rawTail_ = static_cast<uint8_t>((rawTail_ + 1) % kRawQueueLen);
+    got = true;
+  }
+  portEXIT_CRITICAL(&g_mux);
+  return got;
+}
+
+bool BleKeyboardHost::pushRawLocked(const uint32_t code, const bool pressed, const uint32_t atMs,
+                                    const uint8_t keycode, const uint8_t mods, const uint8_t keep,
+                                    const bool wasRest) {
+  const uint8_t used = static_cast<uint8_t>((rawHead_ - rawTail_ + kRawQueueLen) % kRawQueueLen);
+  if (kRawQueueLen - 1 - used <= keep) return false;  // drop rather than block, like the key ring
+  RawButtonEvent& e = rawRing_[rawHead_];
+  e.value = static_cast<uint8_t>(code);
+  e.byteIndex = static_cast<uint8_t>(code >> 8);
+  e.reportId = static_cast<uint8_t>(code >> 16);
+  e.pressed = pressed;
+  e.keycode = keycode;
+  e.mods = mods;
+  e.wasRest = wasRest;
+  e.atMs = atMs;
+  rawHead_ = static_cast<uint8_t>((rawHead_ + 1) % kRawQueueLen);
+  return true;
+}
+
 void BleKeyboardHost::enqueue(const KeyEvent& ev) {
   portENTER_CRITICAL(&g_mux);
   const uint8_t next = static_cast<uint8_t>((ringHead_ + 1) % kKeyQueueLen);
@@ -784,13 +887,22 @@ void BleKeyboardHost::emitUsage(uint8_t usage, uint8_t mods) {
   ev.mods = mods;
   ev.special = special;
   ev.pressed = true;
+  if (framePressUsage_ == 0) {  // the key a raw press of this frame carries
+    framePressUsage_ = usage;
+    framePressMods_ = mods;
+  }
   enqueue(ev);
 }
 
 // --- Internal hooks from the BLE backend -------------------------------------
 void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
-  g_lastReportMs = millis();  // freshness for the stale-release timeout in poll()
+  const uint32_t now = millis();
+  const uint32_t lastMs = g_lastReportMs;
+  g_lastReportMs = now;  // freshness for the stale-release timeout in poll()
+  framePressUsage_ = 0;
+  framePressMods_ = 0;
+  frameAxisPad_ = false;
 
 #if FREEINK_BLE_HID_REPORT_DEBUG
   {
@@ -891,6 +1003,7 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
     const bool pressEdge = code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) != 0;
     const bool releaseEdge = code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) == 0;
     if (codeIdx == 0 && n >= 5) {
+      frameAxisPad_ = true;
       // Gamepad/axis-pair mode (ino gamebrick T): byte 0 is a status byte whose
       // bit0 is "pressed" (0x13 press -> 0x12 release), bytes 1-4 are two 16-bit
       // LE axes centered at ~2000. Every button raises the same pressed bit; the
@@ -927,6 +1040,86 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   } else if (emittedKb) {
     g_lastGenericCode = 0;
   }
+  ingestRawEdge(data, len, now, lastMs);
+}
+
+void BleKeyboardHost::ingestRawEdge(const uint8_t* data, size_t len, const uint32_t now, const uint32_t lastMs) {
+  // Each report id is read against its rest frame. A frame that only clears bits
+  // of the one before is a release and becomes the rest; when the first frame of
+  // a report is followed by one that only adds bits, that first frame was the rest.
+  const RawFrame f = rawFrameOf(data, len);
+  uint8_t slot = 0;
+  while (slot < rawRestCount_ && rawRest_[slot].id != f.id) ++slot;
+  if (slot == rawRestCount_) {
+    if (rawRestCount_ < 4) ++rawRestCount_;
+    slot = rawRestCount_ - 1;
+    rawRest_[slot] = RawRest{};
+    rawRest_[slot].id = f.id;
+  }
+  RawRest& r = rawRest_[slot];
+  uint8_t adds = 0;
+  uint8_t clears = 0;
+  for (uint8_t i = 0; i < 8; ++i) {
+    adds |= f.bytes[i] & ~r.prev[i];
+    clears |= r.prev[i] & ~f.bytes[i];
+  }
+  if (clears && !adds) {
+    memcpy(r.rest, f.bytes, sizeof(r.rest));
+    r.known = true;
+  }
+  if (adds && !clears && r.frames == 1) {
+    memcpy(r.rest, r.prev, sizeof(r.rest));
+    r.known = true;
+  }
+  memcpy(r.prev, f.bytes, sizeof(r.prev));
+  if (r.frames < 2) ++r.frames;
+  // An axis-pair gamepad names its button only through the zone the decoder reads;
+  // its axis bytes ramp while held and would read as a new button on every frame.
+  const uint32_t code = frameAxisPad_ ? 0 : rawButtonCode(f, r.rest);
+
+  portENTER_CRITICAL(&g_mux);
+  bool pressTried = false;
+  if (code != rawCode_) {
+    // Release before press, so a swap of one button for another reads in that
+    // order. A button held until now that was read against the zero guess, whose
+    // byte the rest learned since carries, was the rest frame, not a button.
+    bool heldWasRest = false;
+    for (uint8_t i = 0; rawCode_ != 0 && rawGuessed_ && i < rawRestCount_; ++i) {
+      if (rawRest_[i].id != static_cast<uint8_t>(rawCode_ >> 16)) continue;
+      const uint8_t at = static_cast<uint8_t>(rawCode_ >> 8);
+      heldWasRest = at < 8 && rawRest_[i].known && rawRest_[i].rest[at] == static_cast<uint8_t>(rawCode_);
+      break;
+    }
+    if (rawCode_ != 0 && !rawDropped_) pushRawLocked(rawCode_, false, now, 0, 0, 0, heldWasRest);
+    pressTried = code != 0;
+    rawDropped_ = pressTried && !pushRawLocked(code, true, now, framePressUsage_, framePressMods_, 1);
+    rawCode_ = code;
+    rawGuessed_ = !r.known;
+    rawReports_ = 1;
+  } else if (code != 0) {
+    if (now - lastMs > kReleaseTimeoutMs) {
+      // The same frame after silence, with no release frame between: a remote that
+      // only reports presses. Each such frame is a new press; the one before it is
+      // settled first so every press keeps exactly one release.
+      if (!rawDropped_) pushRawLocked(code, false, lastMs, 0, 0, 0);
+      pressTried = true;
+      rawDropped_ = !pushRawLocked(code, true, now, framePressUsage_, framePressMods_, 1);
+      rawReports_ = 1;
+    } else if (rawReports_ < 255) {
+      ++rawReports_;
+    }
+  }
+  if (framePressUsage_ != 0 && !pressTried) {
+    // The decoder read a key that no byte edge carries (the zone of an axis gamepad,
+    // a key added while another is held). It gets an identity of its own, byte index
+    // 0xFF (never a payload byte), as one tap.
+    const uint8_t open = rawCode_ != 0 && !rawDropped_ ? 1 : 0;
+    const uint32_t k = 0xFFFF00u | framePressUsage_;
+    if (pushRawLocked(k, true, now, framePressUsage_, framePressMods_, static_cast<uint8_t>(1 + open))) {
+      pushRawLocked(k, false, now, 0, 0, open);
+    }
+  }
+  portEXIT_CRITICAL(&g_mux);
 }
 
 void BleKeyboardHost::onScanResultIngest(const char* addr, const char* name, int rssi, uint8_t type, bool hid,
@@ -1086,7 +1279,12 @@ void BleKeyboardHost::onLinkDown() {
   connecting_ = false;
   connAddr_[0] = '\0';
   heldUsage_ = 0;
+  // No button is held across a link drop, and the next remote may rest on other bytes.
+  rawCode_ = 0;
+  rawReports_ = 0;
+  rawDropped_ = false;
   portEXIT_CRITICAL(&g_mux);
+  rawRestCount_ = 0;
   // A link that drops while a key is down never delivers its release. Forget the
   // key, so its first press on the next link reads as a press.
   memset(prevKeys_, 0, sizeof(prevKeys_));
@@ -1190,6 +1388,7 @@ const PairedHidDevice& BleKeyboardHost::paired(uint8_t) const {
 }
 void BleKeyboardHost::forget(const char*) {}
 bool BleKeyboardHost::popKey(KeyEvent&) { return false; }
+bool BleKeyboardHost::popRawButton(RawButtonEvent&) { return false; }
 void BleKeyboardHost::onScanResultIngest(const char*, const char*, int, uint8_t, bool, bool) {}
 void BleKeyboardHost::onReportIngest(const uint8_t*, size_t) {}
 void BleKeyboardHost::onLinkUp(const char*, const char*, uint8_t) {}

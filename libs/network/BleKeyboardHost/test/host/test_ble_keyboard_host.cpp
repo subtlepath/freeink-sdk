@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <initializer_list>
+#include <vector>
+
 #include "fake_ble.h"
 
 namespace {
@@ -431,6 +434,174 @@ void testSelectedPeerThatDropsGetsAFreshPlan() {
   CHECK(attemptsAt(kRemote) == 0);
 }
 
+// --- Raw button edges ------------------------------------------------------------
+
+// A remote with no readable Report Map and one Input report declaring `reportId`.
+int connectBareRemote(uint8_t reportId) {
+  fakeble::resetWorld();
+  const int in = fakeble::addInputReport(reportId);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  return in;
+}
+
+void frame(int in, std::initializer_list<uint8_t> bytes) {
+  const std::vector<uint8_t> data(bytes);
+  fakeble::notify(in, data.data(), data.size());
+}
+
+std::vector<freeink::RawButtonEvent> drainRaw() {
+  std::vector<freeink::RawButtonEvent> edges;
+  freeink::RawButtonEvent ev;
+  while (host().popRawButton(ev)) edges.push_back(ev);
+  return edges;
+}
+
+void testRawEdgeNamesTheReportAndTheByte() {
+  const int in = connectBareRemote(3);
+  freeink::RawButtonEvent ev;
+  CHECK(!host().popRawButton(ev));
+  frame(in, {0x00, 0x02, 0x00});
+  frame(in, {0x00, 0x00, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed);
+  CHECK(edges[0].code() == 0x030102u);
+  CHECK(edges[0].keycode == 0x02);  // what the key decode read from the same frame
+  CHECK(!edges[1].pressed);
+  CHECK(edges[1].code() == 0x030102u);
+  CHECK(!edges[1].wasRest);
+  freeink::KeyEvent key;
+  CHECK(host().popKey(key) && key.keycode == 0x02);  // the key path is unchanged
+}
+
+void testKeyboardModifierByteIsNotTheButton() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  frame(g_inputReport, {0x02, 0, 0x04, 0, 0, 0, 0, 0});  // Shift + A
+  frame(g_inputReport, {0x02, 0, 0, 0, 0, 0, 0, 0});     // A up, Shift still down
+  frame(g_inputReport, {0, 0, 0, 0, 0, 0, 0, 0});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed && edges[0].code() == 0x000204u);
+  CHECK(edges[0].keycode == 0x04 && edges[0].mods == 0x02);
+  CHECK(!edges[1].pressed && edges[1].code() == 0x000204u);
+}
+
+void testStreamedHoldIsOnePressAndOneRelease() {
+  const int in = connectBareRemote(3);
+  unsigned long lastFrameMs = 0;
+  for (int i = 0; i < 6; ++i) {
+    frame(in, {0x00, 0x02, 0x00});
+    lastFrameMs = fakeble::clockMs();
+    fakeble::advanceMillis(40);
+    host().poll();
+  }
+  CHECK(drainRaw().size() == 1);  // the press only, while the frames keep coming
+  fakeble::advanceMillis(200);
+  host().poll();
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 1);
+  if (edges.size() != 1) return;
+  CHECK(!edges[0].pressed);
+  CHECK(edges[0].atMs == lastFrameMs);  // dated by the last frame, when it came up
+}
+
+void testSilentHoldKeepsItsReleaseForTheReleaseFrame() {
+  const int in = connectBareRemote(3);
+  frame(in, {0x00, 0x02, 0x00});
+  fakeble::advanceMillis(1000);
+  host().poll();
+  CHECK(drainRaw().size() == 1);  // still held: one frame per edge, no stream
+  frame(in, {0x00, 0x00, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 1 && !edges[0].pressed);
+}
+
+void testPressOnlyFramesAfterSilenceAreNewPresses() {
+  const int in = connectBareRemote(6);
+  for (int i = 0; i < 3; ++i) {
+    frame(in, {0x01});
+    fakeble::advanceMillis(400);
+    host().poll();
+  }
+  int presses = 0;
+  int releases = 0;
+  for (const freeink::RawButtonEvent& e : drainRaw()) {
+    CHECK(e.code() == 0x060001u);
+    (e.pressed ? presses : releases)++;
+  }
+  CHECK(presses == 3);
+  CHECK(releases == 2);  // the third is still open
+}
+
+void testStatusByteAtConnectIsFlaggedAsTheRest() {
+  // A remote whose idle frame is "10 00 00": its first frame reads as a press
+  // against the zero guess until the next frame shows it was the rest.
+  const int in = connectBareRemote(0);
+  frame(in, {0x10, 0x00, 0x00});
+  frame(in, {0x10, 0x02, 0x00});
+  frame(in, {0x10, 0x00, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 4);
+  if (edges.size() != 4) return;
+  CHECK(edges[0].pressed && edges[0].code() == 0x000010u);
+  CHECK(!edges[1].pressed && edges[1].code() == 0x000010u && edges[1].wasRest);
+  CHECK(edges[2].pressed && edges[2].code() == 0x000102u);
+  CHECK(!edges[3].pressed && edges[3].code() == 0x000102u && !edges[3].wasRest);
+}
+
+void testFullRingDropsWholePressesNeverAReleaseAlone() {
+  const int in = connectBareRemote(3);
+  for (int i = 0; i < 9; ++i) {
+    frame(in, {0x00, 0x02, 0x00});
+    frame(in, {0x00, 0x00, 0x00});
+  }
+  std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 16);  // eight taps; the ninth is dropped whole
+  for (size_t i = 0; i < edges.size(); ++i) CHECK(edges[i].pressed == (i % 2 == 0));
+
+  // One slot free: a press would fit, its release would not, so the press stays out.
+  for (int i = 0; i < 8; ++i) {
+    frame(in, {0x00, 0x02, 0x00});
+    frame(in, {0x00, 0x00, 0x00});
+  }
+  freeink::RawButtonEvent first;
+  CHECK(host().popRawButton(first) && first.pressed);
+  frame(in, {0x00, 0x02, 0x00});
+  frame(in, {0x00, 0x00, 0x00});
+  edges = drainRaw();
+  CHECK(edges.size() == 15);
+  CHECK(!edges.empty() && !edges.back().pressed);
+}
+
+void testAxisGamepadButtonComesAsOneTapNamedByItsZone() {
+  const int in = connectBareRemote(0);
+  frame(in, {0x13, 0xD0, 0x07, 0xD0, 0x07});  // pressed, axes still centred
+  frame(in, {0x13, 0xD0, 0x07, 0x84, 0x03});  // axis 2 ramped low
+  frame(in, {0x12, 0xD0, 0x07, 0x84, 0x03});  // released: the decoder reads the zone
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed && edges[0].code() == 0xFFFF43u && edges[0].keycode == 0x43);
+  CHECK(!edges[1].pressed && edges[1].code() == 0xFFFF43u);
+}
+
+void testNextLinkStartsWithNoButtonHeld() {
+  const int in = connectBareRemote(3);
+  frame(in, {0x00, 0x02, 0x00});
+  fakeble::peerDisconnect();
+  CHECK(fakeble::connectTo(kRemote));
+  frame(in, {0x00, 0x02, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  for (const freeink::RawButtonEvent& e : edges) CHECK(e.pressed);
+}
+
 }  // namespace
 
 int main() {
@@ -451,6 +622,15 @@ int main() {
   testArmIsRefusedWhenItCannotApply();
   testConnectAndDisconnectCancelThePlan();
   testSelectedPeerThatDropsGetsAFreshPlan();
+  testRawEdgeNamesTheReportAndTheByte();
+  testKeyboardModifierByteIsNotTheButton();
+  testStreamedHoldIsOnePressAndOneRelease();
+  testSilentHoldKeepsItsReleaseForTheReleaseFrame();
+  testPressOnlyFramesAfterSilenceAreNewPresses();
+  testStatusByteAtConnectIsFlaggedAsTheRest();
+  testFullRingDropsWholePressesNeverAReleaseAlone();
+  testAxisGamepadButtonComesAsOneTapNamedByItsZone();
+  testNextLinkStartsWithNoButtonHeld();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

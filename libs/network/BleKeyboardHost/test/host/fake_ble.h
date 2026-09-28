@@ -41,7 +41,7 @@ void peerDisconnect();
 
 int addCharacteristic(uint16_t uuid, bool canRead, bool canWrite, bool canNotify);
 // A notifiable Report characteristic with an Input Report Reference descriptor.
-int addInputReport();
+int addInputReport(uint8_t reportId = 0);
 void setValue(int index, const uint8_t* data, size_t len);
 bool notify(int index, const uint8_t* data, size_t len);
 

@@ -203,10 +203,10 @@ struct FakeState {
     return static_cast<int>(chars.size()) - 1;
   }
 
-  int addInput() {
+  int addInput(uint8_t reportId) {
     const int index = add(0x2A4D, true, false, true);
     NimBLERemoteCharacteristic* chr = at(index);
-    chr->reportReference_.bytes_[0] = 0;     // report id
+    chr->reportReference_.bytes_[0] = reportId;
     chr->reportReference_.bytes_[1] = 0x01;  // Input
     chr->reportReference_.len_ = 2;
     chr->hasReportReference_ = true;
@@ -319,7 +319,7 @@ void peerDisconnect() { state().peerDrop(); }
 int addCharacteristic(uint16_t uuid, bool canRead, bool canWrite, bool canNotify) {
   return state().add(uuid, canRead, canWrite, canNotify);
 }
-int addInputReport() { return state().addInput(); }
+int addInputReport(uint8_t reportId) { return state().addInput(reportId); }
 void setValue(int index, const uint8_t* data, size_t len) { state().set(index, data, len); }
 bool notify(int index, const uint8_t* data, size_t len) { return state().notify(index, data, len); }
 
