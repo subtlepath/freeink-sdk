@@ -176,10 +176,13 @@ struct KeyboardLayoutBuffer {
   // NUL-terminated label and alternate text for those keys.
   static constexpr uint16_t TEXT_BYTES = 256;
 
+  // Every member starts initialised, like the key and row structs it holds:
+  // a buffer is only ever read after a build, but a type that leaves 256 bytes
+  // indeterminate is a static-analysis finding in every app that embeds it.
   KeyboardKey keys[MAX_KEYS];
   KeyboardRow rows[MAX_ROWS];
   KeyboardLayout layout;
-  char text[TEXT_BYTES];
+  char text[TEXT_BYTES] = {};
 };
 
 // Exactly the layout builtinKeyboardLayout() returns for the same arguments --
