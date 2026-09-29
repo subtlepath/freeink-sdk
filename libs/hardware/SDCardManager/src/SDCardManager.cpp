@@ -408,14 +408,13 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
     return false;
   }
 
-  // FAT rename does not replace an existing file. ponytail: a power cut between
-  // remove and rename leaves only the complete .tmp; recover it on read if that
-  // window ever matters.
-  if (vol().exists(path) && !vol().remove(path)) {
+  // ponytail: a power cut between replaceFile's remove and rename leaves only
+  // the complete .tmp; recover it on read if that window ever matters.
+  if (!replaceFile(tmp.c_str(), path)) {
     vol().remove(tmp.c_str());
     return false;
   }
-  return vol().rename(tmp.c_str(), path);
+  return true;
 }
 
 bool SDCardManager::ensureDirectoryExists(const char* path) {

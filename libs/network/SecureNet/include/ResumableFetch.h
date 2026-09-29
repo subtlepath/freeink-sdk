@@ -21,15 +21,10 @@ struct FetchOptions {
   // Bytes the sink already holds from an earlier transfer; the first request
   // asks for the rest.
   size_t startOffset = 0;
-  int maxRedirects = 5;
   // Step followed https redirect targets down to http. For payloads that are
   // already content-encrypted, this skips a second TLS session and its record
   // buffer on low-heap boards; only the URL token loses transport security.
   bool redirectToHttp = false;
-  // Only consecutive zero-progress attempts count toward maxStalled;
-  // maxAttempts is a backstop against a server that trickles forever.
-  int maxStalled = 3;
-  int maxAttempts = 20;
 };
 
 struct FetchSink {
@@ -56,12 +51,17 @@ struct FetchResult {
 inline FetchResult fetchResumable(const std::string& startUrl, const FetchOptions& options,
                                   const std::function<void(SecureHttpClient&)>& configure, const FetchSink& sink,
                                   const SecureHttpClient::AbortCallback& shouldAbort = nullptr) {
+  static constexpr int kMaxRedirects = 5;
+  // Only consecutive zero-progress attempts count toward kMaxStalled;
+  // kMaxAttempts is a backstop against a server that trickles forever.
+  static constexpr int kMaxStalled = 3;
+  static constexpr int kMaxAttempts = 20;
   FetchResult result;
   result.bytes = options.startOffset;
   std::string url = startUrl;
   int redirects = 0;
   int stalled = 0;
-  for (int attempt = 0; attempt < options.maxAttempts && stalled < options.maxStalled; ++attempt) {
+  for (int attempt = 0; attempt < kMaxAttempts && stalled < kMaxStalled; ++attempt) {
     SecureHttpClient http;
     if (!http.begin(url)) {
       result.status = -1;
@@ -106,7 +106,7 @@ inline FetchResult fetchResumable(const std::string& startUrl, const FetchOption
     const int status = result.status;
     if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
       const std::string location = http.getHeader("location");
-      if (redirects++ >= options.maxRedirects || location.empty() ||
+      if (redirects++ >= kMaxRedirects || location.empty() ||
           !SecureHttpClient::resolveUrl(url, location, url)) {
         return result;
       }
