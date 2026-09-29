@@ -3596,6 +3596,59 @@ void testGermanAndFrenchLetters() {
   CHECK(std::strcmp(buf, "\xc3\xaatre") == 0);  // être
 }
 
+void testCompactLayoutsMatchBuiltin() {
+  // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
+  // every layer of every layout, one id past the last as the unknown-id path,
+  // compared field by field. This is what keeps the compact strings and the
+  // expanded tables from drifting apart.
+  const auto sameText = [](const char* a, const char* b) {
+    return a == b || (a && b && std::strcmp(a, b) == 0);
+  };
+  KeyboardLayoutBuffer buffer;
+  size_t keysCompared = 0;
+  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::ArabicAr) + 1; ++raw) {
+    const auto id = static_cast<KeyboardLayoutId>(raw);
+    for (uint8_t flags = 0; flags < 16; ++flags) {
+      const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
+      const KeyboardLayout& want = builtinKeyboardLayout(id, shifted, symbols, numbers, lang);
+      const KeyboardLayout& got = buildKeyboardLayout(buffer, id, shifted, symbols, numbers, lang);
+      CHECK_EQ(got.rowCount, want.rowCount);
+      if (got.rowCount != want.rowCount) continue;
+      for (uint8_t r = 0; r < want.rowCount; ++r) {
+        const KeyboardRow& wr = want.rows[r];
+        const KeyboardRow& gr = got.rows[r];
+        CHECK_EQ(gr.count, wr.count);
+        CHECK_EQ(gr.insetUnits, wr.insetUnits);
+        CHECK_EQ(gr.independentKeyWidth, wr.independentKeyWidth);
+        if (gr.count != wr.count) continue;
+        for (uint8_t c = 0; c < wr.count; ++c) {
+          const KeyboardKey& w = wr.keys[c];
+          const KeyboardKey& g = gr.keys[c];
+          CHECK(sameText(g.label, w.label));
+          CHECK(sameText(g.output, w.output));
+          CHECK(sameText(g.alt, w.alt));
+          CHECK(g.kind == w.kind);
+          CHECK_EQ(g.state, w.state);
+          CHECK_EQ(g.value, w.value);
+          CHECK_EQ(g.widthUnits, w.widthUnits);
+          CHECK_EQ(g.enabled, w.enabled);
+          ++keysCompared;
+        }
+      }
+    }
+  }
+  CHECK(keysCompared > 6000);  // the loops above really ran over every layer
+
+  // Each build owns its buffer: a second buffer leaves the first one's layout
+  // untouched, and building into the same buffer again reuses it in place.
+  KeyboardLayoutBuffer other;
+  const KeyboardLayout& ru = buildKeyboardLayout(buffer, KeyboardLayoutId::CyrillicRu, false, false, true);
+  buildKeyboardLayout(other, KeyboardLayoutId::QwertzDe, true);
+  CHECK(sameText(keyboardOutputFor(ru, 0x439), "\xd0\xb9"));  // й
+  CHECK(sameText(keyboardAltOutputFor(ru, 0x435), "\xd1\x91"));  // е -> ё
+  CHECK(&buildKeyboardLayout(buffer, KeyboardLayoutId::QwertyEn) == &buffer.layout);
+}
+
 void testKeyboardUniformRowWidths() {
   DeviceContext device = makeDevice(800, 480);
   InputSnapshot input;
@@ -5763,6 +5816,7 @@ int main() {
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
+  testCompactLayoutsMatchBuiltin();
   testKeyboardUniformRowWidths();
   testKeyboardOuterControlAlignment();
   testWideScriptNumberRowWidth();
