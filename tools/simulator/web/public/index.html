@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>E-ink lab · Subtle Path</title>
+  <meta name="description" content="Try pocket e-paper software in your browser. Explore FreeInk, the lila reader and Tinta Spanish tutor on X3, X4 Classic and X4 Pro.">
+  <link rel="canonical" href="https://subtlepath.com/e-ink/">
+  <link rel="stylesheet" href="./lab.css"><script type="module" src="./lab.mjs"></script>
+</head>
+<body>
+  <a class="skip" href="#simulator">Skip to simulator</a>
+  <header class="mast"><a class="brand" href="/">Subtle Path <span>/ R&amp;D</span></a><nav aria-label="Lab"><a href="#simulator">Try it</a><a href="#flash">Install</a><a href="#about">The work</a></nav></header>
+  <main>
+    <section class="intro"><p class="eyebrow"><span class="dot"></span> E-INK PRODUCT LAB</p><h1>Small screen.<br>A little more presence.</h1><p class="lede">Pocket tools for reading and learning. Real firmware, running right here in your browser.</p></section>
+    <section class="lab" id="simulator" aria-labelledby="lab-heading">
+      <div class="workspace">
+        <div class="workspace-top"><span class="eyebrow" id="lab-heading">INTERACTIVE WORKBENCH</span><span id="status" role="status" aria-live="polite">Choose a demo to begin</span></div>
+        <div class="device-stage"><div id="device" class="device" data-model="X3"><canvas id="screen" width="528" height="792" aria-label="Simulated e-paper display"></canvas><div id="hardware-buttons"></div><button class="home-key" id="home-key" aria-label="Capacitive Home" hidden></button></div></div>
+        <div class="workbench-bottom"><span id="hardware-spec">X3 · 528 × 792 · physical keys</span><div><button id="restart" class="quiet">↻ Restart</button><button id="capture" class="quiet">↓ Screenshot</button></div></div>
+      </div>
+      <aside class="controls"><p class="eyebrow">01 / CHOOSE YOUR TOOL</p><h2>Make room for focus.</h2><label for="app">Software</label><select id="app"><option value="tinta">Tinta · Mexican Spanish tutor</option><option value="lila">lila · CrossPoint reader</option><option value="image">Firmware image · CPU emulator</option></select><p id="app-description">Learn a little Mexican Spanish every day. Lessons, spaced repetition, a dictionary and stories — all offline.</p>
+        <fieldset><legend>Device</legend><div class="models"><label><input type="radio" name="device" value="X3" checked><span>X3</span></label><label><input type="radio" name="device" value="X4CLASSIC"><span>X4 Classic</span></label><label><input type="radio" name="device" value="X4PRO"><span>X4 Pro</span></label></div></fieldset>
+        <label id="image-input-label" hidden>ESP32 application or full-flash image <input type="file" id="image-input" accept=".bin"></label>
+        <button id="start" class="primary">Start demo <span>↗</span></button>
+        <p class="hint" id="input-hint">Press the keys on the device. Arrow keys navigate; Enter confirms; Esc goes back. Hold a key for a long press.</p>
+        <details><summary>Virtual SD card</summary><p>Files stay in this browser session. Add an EPUB or TXT, then restart the reader to rescan.</p><input type="file" id="card-file" accept=".epub,.txt,.xtc"></details>
+        <details><summary>Firmware console</summary><pre id="console" aria-label="Firmware console"></pre></details>
+      </aside>
+    </section>
+    <section class="install" id="flash" aria-labelledby="install-heading"><div><p class="eyebrow">02 / TAKE IT WITH YOU</p><h2 id="install-heading">From browser<br>to pocket.</h2><p>Install the software on your own reader over USB. Choose your exact device, connect with a data cable, and keep it plugged in until the write finishes.</p><p class="hint" id="serial-support">Checking Web Serial support…</p><p class="hint">Back up your stock firmware first. Use a data-capable pogo-pin adapter for your reader. The X3 needs to be awake. If connection fails on an S3, hold the left page key and tap the Reset pinhole, then release the key.</p></div>
+      <div class="flash-panel"><label for="flash-device">Your physical device</label><select id="flash-device"><option value="X3">X3</option><option value="X4CLASSIC">X4 Classic</option><option value="X4PRO">X4 Pro</option></select><label for="flash-app">Firmware</label><select id="flash-app"><option value="tinta">Tinta</option><option value="lila">lila</option></select><p id="release-info" class="hint">Loading releases…</p><label class="check"><input id="flash-consent" type="checkbox"><span>I have a backup and have checked the exact device model. Installing replaces its firmware.</span></label><button id="connect" class="secondary">Connect device</button><button id="write" class="primary" disabled>Install selected firmware</button><button id="disconnect" class="quiet" disabled>Disconnect</button><progress id="flash-progress" max="100" value="0" aria-label="Firmware installation progress"></progress><p id="flash-status" role="status" aria-live="polite">No device connected.</p><details><summary>Connection log</summary><pre id="flash-log"></pre></details></div>
+    </section>
+    <section class="about" id="about"><p class="eyebrow">03 / PRODUCT RESEARCH &amp; DEVELOPMENT</p><h2>Software shaped by its hardware.</h2><div class="projects"><article><span>01</span><h3>FreeInk SDK</h3><p>A shared foundation for pocket e-paper devices: display drivers, physical input, storage and a simulator that follows the actual buses.</p></article><article><span>02</span><h3>lila reader</h3><p>A fork of CrossPoint Reader, exploring typography, reading rhythm and a quiet interface for EPUB and plain text.</p></article><article><span>03</span><h3>Tinta</h3><p>A dedicated Mexican Spanish tutor. Small daily sessions, useful phrases and stories, with an offline course and review schedule.</p></article></div><p class="hint">The demo runs compiled C++ firmware against virtual hardware. E-paper timing and grayscale are models; optical ghosting, radio behavior and electrical reliability still need real-device testing. Device control placement follows <a href="https://www.xteink.com/pages/user-guide">Xteink’s user guides</a>.</p></section>
+  </main><footer><a href="/">← Subtle Path</a><span>Independent product R&amp;D · Ashland, Oregon</span></footer>
+</body></html>

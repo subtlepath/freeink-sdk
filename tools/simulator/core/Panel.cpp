@@ -139,6 +139,9 @@ class Ssd1677Controller : public PanelController {
     args_.clear();
     ramWrite_ = false;
     updateSequence_ = 0;
+    updateControl1_ = 0;
+    customLut_ = false;
+    panel_.setGrayEncoding(GrayEncoding::Mono);
   }
 
  private:
@@ -185,6 +188,18 @@ class Ssd1677Controller : public PanelController {
       case 0x22:  // DISPLAY_UPDATE_CTRL2 — selects the waveform for 0x20
         if (args_.size() >= 1) updateSequence_ = args_[0];
         break;
+      case 0x21:  // DISPLAY_UPDATE_CTRL1 — RED RAM bypass
+        if (args_.size() >= 1) updateControl1_ = args_[0];
+        break;
+      case 0x32:  // WRITE_LUT — 50 voltage bytes, 50 timing bytes, 5 frame rates
+        if (args_.size() >= 105) {
+          customLut_ = true;
+          // The AA bank leaves channel 00 undriven, preserving the B/W base.
+          // The factory bank drives all four targets with inverted polarity.
+          overlayLut_ = std::all_of(args_.begin(), args_.begin() + 10,
+                                    [](uint8_t byte) { return byte == 0; });
+        }
+        break;
       default:
         break;
     }
@@ -212,6 +227,12 @@ class Ssd1677Controller : public PanelController {
       panel_.setPowered((updateSequence_ & 0xC0) != 0);
       return;
     }
+    // Loading OTP replaces an earlier external LUT. Otherwise use the two RAM
+    // planes according to the uploaded bank, unless CTRL1 bypasses RED.
+    if (updateSequence_ & 0x10) customLut_ = false;
+    panel_.setGrayEncoding(customLut_ && !(updateControl1_ & 0x40)
+                              ? (overlayLut_ ? GrayEncoding::Ssd1677Overlay : GrayEncoding::Ssd1677Absolute)
+                              : GrayEncoding::Mono);
     // Vendor sequences distinguish the waveform: 0xCC/0xFC/0xD4-style partial
     // (DU) sequences are the fast path, 0xF7/0xC7 the full one.
     RefreshKind kind = RefreshKind::Full;
@@ -233,6 +254,9 @@ class Ssd1677Controller : public PanelController {
   int xStart_ = 0, xEnd_ = 0, yStart_ = 0, yEnd_ = 0;
   int cursorX_ = 0, cursorY_ = 0;
   uint8_t updateSequence_ = 0;
+  uint8_t updateControl1_ = 0;
+  bool customLut_ = false;
+  bool overlayLut_ = false;
 };
 
 // ── UC81xx (UC8253 / UC8179 / UC8279) ────────────────────────────────────────
@@ -324,6 +348,7 @@ class Uc81xxController : public PanelController {
     streaming_ = false;
     partial_ = false;
     readIndex_ = 0;
+    passiveBlackLut_ = false;
   }
 
  private:
@@ -345,6 +370,14 @@ class Uc81xxController : public PanelController {
 
   void applyArgs() {
     switch (cmd_) {
+      case 0x24:  // LUT_BB — voltage selectors every six bytes, then timings
+        if (!answersVersionProbe_ && args_.size() >= 42) {
+          passiveBlackLut_ = true;
+          for (size_t i = 0; i < 42; i += 6) {
+            if (args_[i] != 0) passiveBlackLut_ = false;
+          }
+        }
+        break;
       case 0x61:  // TRES — resolution
         if (args_.size() >= 4) {
           const int w = (args_[0] << 8) | args_[1];
@@ -371,6 +404,9 @@ class Uc81xxController : public PanelController {
 
   void runRefresh() {
     panel_.recordEvent(0x12, nullptr, 0, "DRF");
+    // The X3 AA nudge bank leaves BB (00) and WB (10 in old/new order)
+    // passive. These are masks over the B/W base, not a replacement DTM2 image.
+    panel_.setGrayEncoding(passiveBlackLut_ ? GrayEncoding::Uc8253Overlay : GrayEncoding::Mono);
     const RefreshKind kind = partial_ ? RefreshKind::Partial : RefreshKind::Full;
     panel_.startRefresh(kind, partial_ ? kPartialRefreshMs : kFullRefreshMs);
   }
@@ -387,6 +423,7 @@ class Uc81xxController : public PanelController {
   int partialX0_ = 0, partialY0_ = 0;
   int readIndex_ = 0;
   uint8_t lutVersion_ = 0x02;
+  bool passiveBlackLut_ = false;
 };
 
 }  // namespace
@@ -409,6 +446,7 @@ void Panel::configure(int width, int height, uint8_t controller, bool mirrorX, b
   mirrorY_ = mirrorY;
   gatesReversed_ = gatesReversed;
   controllerId_ = controller;
+  grayEncoding_ = GrayEncoding::Mono;
 
   switch (controller) {
     case FSIM_PANEL_SSD1677:
@@ -602,12 +640,25 @@ void Panel::composite(std::vector<uint8_t>* out) const {
       const uint8_t bw = ram_[0][static_cast<size_t>(srcY) * width_ + srcX];
 
       uint8_t value = bw ? 255 : 0;
-      if (grayPlanes_ == 2) {
+      if (grayEncoding_ != GrayEncoding::Mono) {
         // Two-plane grey: the second plane selects the mid tones. The levels
         // are the drivers' nominal targets, not measured optical response.
         const uint8_t second = ram_[1][static_cast<size_t>(srcY) * width_ + srcX];
-        static const uint8_t kLevels[4] = {0, 85, 170, 255};
-        value = kLevels[(bw ? 2 : 0) | (second ? 1 : 0)];
+        const int code = (bw ? 2 : 0) | (second ? 1 : 0);
+        if (grayEncoding_ == GrayEncoding::Uc8253Overlay) {
+          const size_t destination = static_cast<size_t>(dstY) * width_ + dstX;
+          value = code < 2 ? frame_.pixels[destination] : (code == 2 ? 170 : 85);
+        } else if (grayEncoding_ == GrayEncoding::Ssd1677Overlay) {
+          static const uint8_t kLevels[4] = {0, 170, 128, 85};
+          const size_t destination = static_cast<size_t>(dstY) * width_ + dstX;
+          value = code == 0 ? frame_.pixels[destination] : kLevels[code];
+        } else if (grayEncoding_ == GrayEncoding::Ssd1677Absolute) {
+          static const uint8_t kLevels[4] = {255, 85, 170, 0};
+          value = kLevels[code];
+        } else {
+          static const uint8_t kLevels[4] = {0, 85, 170, 255};
+          value = kLevels[code];
+        }
       }
       (*out)[static_cast<size_t>(dstY) * width_ + dstX] = value;
     }

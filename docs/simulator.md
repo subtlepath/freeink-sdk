@@ -1,5 +1,8 @@
 # FreeInk device simulator
 
+For browser demos of Tinta and lila on X3, X4 Classic and X4 Pro, plus Web Serial
+installation and sp2 site integration, see [the web simulator](../tools/simulator/web/README.md).
+
 A host simulator for FreeInk firmware, in the shape of Apple's platform
 simulators: a long-running daemon that models a device, and a CLI that drives it
 over a Unix socket. It exists so firmware can be built, run, driven and

@@ -24,6 +24,7 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t s, TickType_t ticks_to_wait);
 BaseType_t xSemaphoreGive(SemaphoreHandle_t s);
 BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t s, TickType_t ticks_to_wait);
 BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t s);
+TaskHandle_t xSemaphoreGetMutexHolder(SemaphoreHandle_t s);
 BaseType_t xSemaphoreGiveFromISR(SemaphoreHandle_t s, BaseType_t* woken);
 BaseType_t xSemaphoreTakeFromISR(SemaphoreHandle_t s, BaseType_t* woken);
 

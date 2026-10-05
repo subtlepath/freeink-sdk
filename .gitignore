@@ -18,3 +18,13 @@ tools/simulator/build/*.dSYM/
 # but they are not ours to redistribute.
 firmware*.bin
 __pycache__/
+
+# Generated browser runtimes and dependency caches.
+.pnpm-store/
+tools/simulator/web/node_modules/
+tools/simulator/web/build/
+tools/simulator/web/staging/
+tools/simulator/web/public/runtime/
+tools/simulator/web/public/releases/
+tools/simulator/web/public/vendor/
+tools/simulator/web/public/content/

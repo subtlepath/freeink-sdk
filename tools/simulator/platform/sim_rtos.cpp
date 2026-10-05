@@ -53,14 +53,23 @@ struct Task {
   UBaseType_t priority = 1;
 };
 
-struct Queue {
+enum class QueueKind { Items, Semaphore };
+struct QueueObject {
+  QueueKind kind;
+  explicit QueueObject(QueueKind value) : kind(value) {}
+};
+
+struct Queue : QueueObject {
+  Queue() : QueueObject(QueueKind::Items) {}
   std::mutex mutex;
   std::deque<std::vector<uint8_t>> items;
   size_t capacity = 0;
   size_t itemSize = 0;
 };
 
-struct Semaphore {
+struct Semaphore : QueueObject {
+  Semaphore() : QueueObject(QueueKind::Semaphore) {}
+  TaskHandle_t ownerTask = nullptr;
   std::mutex mutex;
   int64_t count = 0;
   int64_t maxCount = 1;
@@ -68,6 +77,16 @@ struct Semaphore {
   std::thread::id owner{};
   int64_t recursionDepth = 0;
 };
+
+Queue* asQueue(QueueHandle_t handle) {
+  auto* object = static_cast<QueueObject*>(handle);
+  return object && object->kind == QueueKind::Items ? static_cast<Queue*>(object) : nullptr;
+}
+
+Semaphore* asSemaphore(SemaphoreHandle_t handle) {
+  auto* object = static_cast<QueueObject*>(handle);
+  return object && object->kind == QueueKind::Semaphore ? static_cast<Semaphore*>(object) : nullptr;
+}
 
 struct EventGroup {
   std::mutex mutex;
@@ -168,6 +187,22 @@ extern "C" BaseType_t xTaskNotifyGive(TaskHandle_t handle) {
   ++task->notifications;
   return pdPASS;
 }
+extern "C" BaseType_t xTaskNotify(TaskHandle_t handle, uint32_t value, eNotifyAction action) {
+  auto* task = static_cast<Task*>(handle);
+  if (!task) return pdFAIL;
+  switch (action) {
+    case eIncrement: ++task->notifications; break;
+    case eSetBits: task->notifications.fetch_or(value); break;
+    case eSetValueWithOverwrite: task->notifications = value; break;
+    case eSetValueWithoutOverwrite: {
+      uint32_t expected = 0;
+      if (!task->notifications.compare_exchange_strong(expected, value)) return pdFAIL;
+      break;
+    }
+    case eNoAction: break;
+  }
+  return pdPASS;
+}
 extern "C" void vTaskNotifyGiveFromISR(TaskHandle_t handle, BaseType_t* woken) {
   xTaskNotifyGive(handle);
   if (woken) *woken = pdFALSE;
@@ -193,16 +228,16 @@ extern "C" QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size)
   auto* q = new Queue();
   q->capacity = length;
   q->itemSize = item_size;
-  return q;
+  return static_cast<QueueObject*>(q);
 }
 extern "C" QueueHandle_t xQueueCreateStatic(UBaseType_t length, UBaseType_t item_size, uint8_t*, StaticQueue_t*) {
   return xQueueCreate(length, item_size);
 }
-extern "C" void vQueueDelete(QueueHandle_t handle) { delete static_cast<Queue*>(handle); }
+extern "C" void vQueueDelete(QueueHandle_t handle) { delete asQueue(handle); }
 
 namespace {
 BaseType_t queueSend(QueueHandle_t handle, const void* item, TickType_t ticks_to_wait, bool front) {
-  auto* q = static_cast<Queue*>(handle);
+  auto* q = asQueue(handle);
   if (!q || !item) return errQUEUE_FULL;
   if (!waitFor(q->mutex, ticks_to_wait, [q] { return q->items.size() < q->capacity; })) return errQUEUE_FULL;
   std::lock_guard<std::mutex> lock(q->mutex);
@@ -232,7 +267,7 @@ extern "C" BaseType_t xQueueSendFromISR(QueueHandle_t q, const void* item, BaseT
 }
 
 extern "C" BaseType_t xQueueReceive(QueueHandle_t handle, void* out, TickType_t ticks_to_wait) {
-  auto* q = static_cast<Queue*>(handle);
+  auto* q = asQueue(handle);
   if (!q) return pdFAIL;
   if (!waitFor(q->mutex, ticks_to_wait, [q] { return !q->items.empty(); })) return pdFAIL;
   std::lock_guard<std::mutex> lock(q->mutex);
@@ -243,7 +278,14 @@ extern "C" BaseType_t xQueueReceive(QueueHandle_t handle, void* out, TickType_t 
 }
 
 extern "C" BaseType_t xQueuePeek(QueueHandle_t handle, void* out, TickType_t ticks_to_wait) {
-  auto* q = static_cast<Queue*>(handle);
+  // FreeRTOS semaphores are queues with zero-sized items. Firmware uses a
+  // non-consuming peek with a null buffer to check whether a mutex is free.
+  if (auto* s = asSemaphore(handle)) {
+    if (!waitFor(s->mutex, ticks_to_wait, [s] { return s->count > 0; })) return pdFAIL;
+    std::lock_guard<std::mutex> lock(s->mutex);
+    return s->count > 0 ? pdPASS : pdFAIL;
+  }
+  auto* q = asQueue(handle);
   if (!q) return pdFAIL;
   if (!waitFor(q->mutex, ticks_to_wait, [q] { return !q->items.empty(); })) return pdFAIL;
   std::lock_guard<std::mutex> lock(q->mutex);
@@ -253,7 +295,7 @@ extern "C" BaseType_t xQueuePeek(QueueHandle_t handle, void* out, TickType_t tic
 }
 
 extern "C" BaseType_t xQueueReset(QueueHandle_t handle) {
-  auto* q = static_cast<Queue*>(handle);
+  auto* q = asQueue(handle);
   if (!q) return pdFAIL;
   std::lock_guard<std::mutex> lock(q->mutex);
   q->items.clear();
@@ -261,14 +303,22 @@ extern "C" BaseType_t xQueueReset(QueueHandle_t handle) {
 }
 
 extern "C" UBaseType_t uxQueueMessagesWaiting(QueueHandle_t handle) {
-  auto* q = static_cast<Queue*>(handle);
+  if (auto* s = asSemaphore(handle)) {
+    std::lock_guard<std::mutex> lock(s->mutex);
+    return static_cast<UBaseType_t>(s->count);
+  }
+  auto* q = asQueue(handle);
   if (!q) return 0;
   std::lock_guard<std::mutex> lock(q->mutex);
   return static_cast<UBaseType_t>(q->items.size());
 }
 
 extern "C" UBaseType_t uxQueueSpacesAvailable(QueueHandle_t handle) {
-  auto* q = static_cast<Queue*>(handle);
+  if (auto* s = asSemaphore(handle)) {
+    std::lock_guard<std::mutex> lock(s->mutex);
+    return static_cast<UBaseType_t>(s->maxCount - s->count);
+  }
+  auto* q = asQueue(handle);
   if (!q) return 0;
   std::lock_guard<std::mutex> lock(q->mutex);
   return static_cast<UBaseType_t>(q->capacity - q->items.size());
@@ -279,53 +329,67 @@ extern "C" SemaphoreHandle_t xSemaphoreCreateBinary(void) {
   auto* s = new Semaphore();
   s->count = 0;
   s->maxCount = 1;
-  return s;
+  return static_cast<QueueObject*>(s);
 }
 extern "C" SemaphoreHandle_t xSemaphoreCreateMutex(void) {
   auto* s = new Semaphore();
   s->count = 1;
   s->maxCount = 1;
-  return s;
+  return static_cast<QueueObject*>(s);
 }
 extern "C" SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) {
   auto* s = new Semaphore();
   s->count = 1;
   s->maxCount = 1;
   s->recursive = true;
-  return s;
+  return static_cast<QueueObject*>(s);
 }
 extern "C" SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t max_count, UBaseType_t initial_count) {
   auto* s = new Semaphore();
   s->count = initial_count;
   s->maxCount = max_count;
-  return s;
+  return static_cast<QueueObject*>(s);
 }
 extern "C" SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t*) { return xSemaphoreCreateBinary(); }
 extern "C" SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t*) { return xSemaphoreCreateMutex(); }
-extern "C" void vSemaphoreDelete(SemaphoreHandle_t handle) { delete static_cast<Semaphore*>(handle); }
+extern "C" void vSemaphoreDelete(SemaphoreHandle_t handle) { delete asSemaphore(handle); }
 
 extern "C" BaseType_t xSemaphoreTake(SemaphoreHandle_t handle, TickType_t ticks_to_wait) {
-  auto* s = static_cast<Semaphore*>(handle);
+  auto* s = asSemaphore(handle);
   if (!s) return pdFAIL;
-  if (!waitFor(s->mutex, ticks_to_wait, [s] { return s->count > 0; })) return pdFAIL;
-  std::lock_guard<std::mutex> lock(s->mutex);
-  if (s->count <= 0) return pdFAIL;
+  std::unique_lock<std::mutex> lock(s->mutex);
+  const uint64_t deadline = fsim_micros() + static_cast<uint64_t>(ticks_to_wait) * 1000ULL;
+  while (s->count <= 0) {
+    if (ticks_to_wait == 0 || (ticks_to_wait != portMAX_DELAY && fsim_micros() >= deadline)) return pdFAIL;
+    lock.unlock();
+    if (fsim_delay_us(kWaitSliceUs) != 0) return pdFAIL;
+    lock.lock();
+  }
   --s->count;
   s->owner = std::this_thread::get_id();
+  s->ownerTask = t_currentTask;
   return pdPASS;
 }
 
 extern "C" BaseType_t xSemaphoreGive(SemaphoreHandle_t handle) {
-  auto* s = static_cast<Semaphore*>(handle);
+  auto* s = asSemaphore(handle);
   if (!s) return pdFAIL;
   std::lock_guard<std::mutex> lock(s->mutex);
   if (s->count >= s->maxCount) return pdFAIL;
   ++s->count;
+  s->ownerTask = nullptr;
   return pdPASS;
 }
 
+extern "C" TaskHandle_t xSemaphoreGetMutexHolder(SemaphoreHandle_t handle) {
+  auto* s = asSemaphore(handle);
+  if (!s) return nullptr;
+  std::lock_guard<std::mutex> lock(s->mutex);
+  return s->ownerTask;
+}
+
 extern "C" BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t handle, TickType_t ticks_to_wait) {
-  auto* s = static_cast<Semaphore*>(handle);
+  auto* s = asSemaphore(handle);
   if (!s) return pdFAIL;
   {
     std::lock_guard<std::mutex> lock(s->mutex);
@@ -341,7 +405,7 @@ extern "C" BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t handle, TickType
 }
 
 extern "C" BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t handle) {
-  auto* s = static_cast<Semaphore*>(handle);
+  auto* s = asSemaphore(handle);
   if (!s) return pdFAIL;
   {
     std::lock_guard<std::mutex> lock(s->mutex);

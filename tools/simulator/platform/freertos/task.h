@@ -31,6 +31,8 @@ void vTaskSuspend(TaskHandle_t handle);
 void vTaskResume(TaskHandle_t handle);
 
 BaseType_t xTaskNotifyGive(TaskHandle_t handle);
+typedef enum { eNoAction, eSetBits, eIncrement, eSetValueWithOverwrite, eSetValueWithoutOverwrite } eNotifyAction;
+BaseType_t xTaskNotify(TaskHandle_t handle, uint32_t value, eNotifyAction action);
 void vTaskNotifyGiveFromISR(TaskHandle_t handle, BaseType_t* woken);
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait);
 

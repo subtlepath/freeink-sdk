@@ -17,7 +17,7 @@ class String {
  public:
   String() = default;
   String(const char* s) : _s(s ? s : "") {}
-  String(const std::string& s) : _s(s) {}
+  explicit String(const std::string& s) : _s(s) {}
   String(char c) : _s(1, c) {}
   String(int v) : _s(std::to_string(v)) {}
   String(long v) : _s(std::to_string(v)) {}
@@ -37,6 +37,9 @@ class String {
   bool isEmpty() const { return _s.empty(); }
   void clear() { _s.clear(); }
   void reserve(size_t n) { _s.reserve(n); }
+  bool concat(const char* text, size_t size) { if (!text) return false; _s.append(text, size); return true; }
+  bool concat(const char* text) { return text && concat(text, strlen(text)); }
+  bool concat(char text) { _s.push_back(text); return true; }
 
   char charAt(size_t i) const { return i < _s.size() ? _s[i] : '\0'; }
   char operator[](size_t i) const { return charAt(i); }

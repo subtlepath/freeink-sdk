@@ -13,10 +13,10 @@
 // the wrong order, or fires a refresh without waiting for BUSY produces a wrong
 // or missing image here, exactly as it would on glass.
 //
-// What is NOT modelled: waveform physics. LUT contents are recorded, not
-// simulated, so grey levels are the driver's intent rather than measured
-// optical response, and ghosting is approximated from refresh mode and history
-// rather than derived from voltages. Panel tuning still needs hardware.
+// LUT banks select nominal mono, grayscale-overlay or absolute-gray behavior.
+// Waveform physics are not modelled: grey levels express the driver's intent,
+// not measured optical response, and ghosting is approximated from refresh
+// mode and history rather than voltages. Panel tuning still needs hardware.
 
 #include <chrono>
 #include <condition_variable>
@@ -32,6 +32,7 @@ namespace freeink::sim {
 class Machine;
 
 enum class RefreshKind { Full, Partial, Fast, Unknown };
+enum class GrayEncoding { Mono, Linear, Ssd1677Overlay, Ssd1677Absolute, Uc8253Overlay };
 
 // One finished frame, as the glass would show it.
 struct Frame {
@@ -130,8 +131,9 @@ class Panel {
   void recordEvent(uint8_t cmd, const uint8_t* data, size_t len, const char* name);
   // Grey depth the controller is currently uploading (1 = mono, 2 = two-plane
   // 4-level grey). Set by drivers that stream dual planes.
-  void setGrayPlanes(int planes) { grayPlanes_ = planes; }
-  int grayPlanes() const { return grayPlanes_; }
+  void setGrayPlanes(int planes) { grayEncoding_ = planes == 2 ? GrayEncoding::Linear : GrayEncoding::Mono; }
+  int grayPlanes() const { return grayEncoding_ == GrayEncoding::Mono ? 1 : 2; }
+  void setGrayEncoding(GrayEncoding encoding) { grayEncoding_ = encoding; }
 
  private:
   void publishFrame(RefreshKind kind, uint32_t durationMs);
@@ -169,7 +171,7 @@ class Panel {
   // and is scrubbed by a full one. Enough to make "this screen needs a full
   // refresh" visible; not a waveform simulation.
   std::vector<uint8_t> ghost_;
-  int grayPlanes_ = 1;
+  GrayEncoding grayEncoding_ = GrayEncoding::Mono;
 
   std::deque<BusEvent> trace_;
   static constexpr size_t kMaxTrace = 4096;

@@ -90,6 +90,9 @@ class Clock {
   // back off — the difference between a 30-second sleep costing nothing and
   // costing thirty seconds.
   bool tick();
+  // A single-threaded emulator owns virtual time itself. Advance between CPU
+  // slices without parking on a condition variable awaiting a clock thread.
+  void advanceExternal(uint64_t us) { advanceTo(nowUs() + us); }
   void shutdown();
 
  private:

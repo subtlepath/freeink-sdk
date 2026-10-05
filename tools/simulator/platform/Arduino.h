@@ -160,6 +160,7 @@ class SimSerial {
   operator bool() const { return true; }
   int available() { return 0; }
   int read() { return -1; }
+  String readStringUntil(char) { return String(); }
 
   size_t write(uint8_t c) { return write(&c, 1); }
   size_t write(const uint8_t* data, size_t len) {
@@ -219,6 +220,7 @@ extern SimSerial USBSerial;
 class Print {
  public:
   virtual ~Print() = default;
+  virtual void flush() {}
   virtual size_t write(uint8_t) = 0;
   virtual size_t write(const uint8_t* buf, size_t size) {
     size_t n = 0;
@@ -232,4 +234,15 @@ class Stream : public Print {
   virtual int available() = 0;
   virtual int read() = 0;
   virtual int peek() = 0;
+  size_t readBytes(char* buffer, size_t size) {
+    size_t n = 0; int value;
+    while (n < size && (value = read()) >= 0) buffer[n++] = static_cast<char>(value);
+    return n;
+  }
+  size_t readBytes(uint8_t* buffer, size_t size) { return readBytes(reinterpret_cast<char*>(buffer), size); }
+};
+class Printable {
+ public:
+  virtual ~Printable() = default;
+  virtual size_t printTo(Print&) const = 0;
 };

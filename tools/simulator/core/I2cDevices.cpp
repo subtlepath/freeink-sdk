@@ -69,7 +69,7 @@ class Gt911Device : public I2cDevice {
     if (reg == 0x814E) {
       if (touch.down) {
         releasePending_ = true;
-        return 0x80 | 0x01;  // data ready, one contact
+        return touch.x < 0 && touch.y < 0 ? 0x90 : 0x81;
       }
       return releasePending_ ? 0x80 : 0x00;  // data ready with no contacts: the lift
     }
@@ -79,9 +79,16 @@ class Gt911Device : public I2cDevice {
       // so the SDK's forward transform lands back on the requested point.
       int x = touch.x;
       int y = touch.y;
-      if (desc_.touch_flip_x) x = desc_.touch_raw_max_x - x;
-      if (desc_.touch_flip_y) y = desc_.touch_raw_max_y - y;
-      if (desc_.touch_swap_xy) std::swap(x, y);
+      if (x < 0 && y < 0) {
+        // The X4 Pro capacitive Home key is a GT911 sentinel, not a panel
+        // coordinate. Match InputManager's raw-word decode before transforms.
+        x = 0x03a0;
+        y = 0x1020;
+      } else {
+        if (desc_.touch_flip_x) x = desc_.touch_raw_max_x - x;
+        if (desc_.touch_flip_y) y = desc_.touch_raw_max_y - y;
+        if (desc_.touch_swap_xy) std::swap(x, y);
+      }
 
       // With a track-id byte the coordinates start at byte 1; without one they
       // start at byte 0. The profile says which this module is.

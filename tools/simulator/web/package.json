@@ -1,0 +1,9 @@
+{
+  "name": "freeink-web-simulator",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test test/*.test.mjs", "vendor": "esbuild node_modules/esptool-js/lib/index.js --bundle --format=esm --platform=browser --outfile=public/vendor/esptool.js"},
+  "dependencies": {"esptool-js": "0.7.0"},
+  "devDependencies": {"esbuild": "0.25.10", "@playwright/test": "1.56.1"},
+  "pnpm": {"onlyBuiltDependencies": ["esbuild"]}
+}

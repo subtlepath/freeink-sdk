@@ -10,6 +10,7 @@
 #include <spi_flash_mmap.h>
 
 #include <cstdio>
+#include <ctime>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -91,17 +92,38 @@ bool FsFile::open(const char* path, oflag_t oflag) {
   return true;
 }
 
-void FsFile::close() {
+bool FsFile::close() {
+  bool ok = true;
   if (_fp) {
-    ::fclose(_fp);
+    ok = ::fclose(_fp) == 0;
     _fp = nullptr;
   }
   if (_dir) {
-    ::closedir(static_cast<DIR*>(_dir));
+    ok = (::closedir(static_cast<DIR*>(_dir)) == 0) && ok;
     _dir = nullptr;
   }
   _hostPath.clear();
   _name.clear();
+  return ok;
+}
+
+bool FsFile::getModifyDateTime(uint16_t* date, uint16_t* time) const {
+  struct stat st{};
+  if (!date || !time || ::stat(_hostPath.c_str(), &st) != 0) return false;
+  struct tm parts{};
+  if (!localtime_r(&st.st_mtime, &parts) || parts.tm_year < 80) return false;
+  *date = static_cast<uint16_t>(((parts.tm_year - 80) << 9) | ((parts.tm_mon + 1) << 5) | parts.tm_mday);
+  *time = static_cast<uint16_t>((parts.tm_hour << 11) | (parts.tm_min << 5) | (parts.tm_sec / 2));
+  return true;
+}
+
+bool FsFile::rename(const char* newPath) {
+  char resolved[4096];
+  if (fsim_sd_resolve(newPath, resolved, sizeof resolved) != 0) return false;
+  if (::rename(_hostPath.c_str(), resolved) != 0) return false;
+  _hostPath = resolved;
+  _name = baseName(_hostPath);
+  return true;
 }
 
 FsFile FsFile::openNextFile(oflag_t oflag) {

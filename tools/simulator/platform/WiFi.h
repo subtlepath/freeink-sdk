@@ -33,6 +33,11 @@ typedef enum { WIFI_MODE_NULL = 0, WIFI_MODE_STA, WIFI_MODE_AP, WIFI_MODE_APSTA 
 #define WIFI_STA WIFI_MODE_STA
 #define WIFI_AP WIFI_MODE_AP
 #define WIFI_OFF WIFI_MODE_NULL
+#define WIFI_SCAN_RUNNING -1
+#define WIFI_SCAN_FAILED -2
+#define WIFI_AUTH_OPEN 0
+#define WIFI_ALL_CHANNEL_SCAN 1
+#define WIFI_CONNECT_AP_BY_SIGNAL 1
 
 class SimWiFiClass {
  public:
@@ -64,6 +69,18 @@ class SimWiFiClass {
   String macAddress() { return String("02:46:52:45:45:00"); }
   int32_t RSSI() { return isConnected() ? -55 : -100; }
   void setSleep(bool) {}
+  wifi_mode_t getMode() const { return _mode; }
+  int16_t scanComplete() const { return static_cast<int16_t>(_scan.size()); }
+  void setScanMethod(int) {}
+  void setSortMethod(int) {}
+  void setHostname(const char*) {}
+  String SSID() { return String(); }
+  bool softAP(const char*, const char* = nullptr, int = 1, bool = false, int = 4) { return false; }
+  bool softAPdisconnect(bool = false) { return true; }
+  IPAddress softAPIP() { return IPAddress(); }
+  const uint8_t* BSSID(uint8_t = 0) { static const uint8_t empty[6]{}; return empty; }
+  void BSSID(uint8_t* out) { if (out) memset(out, 0, 6); }
+  int channel(uint8_t = 0) { return 0; }
   void setAutoReconnect(bool) {}
   void persistent(bool) {}
 

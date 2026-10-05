@@ -83,7 +83,7 @@ class FsFile : public Print {
   bool open(const char* path, oflag_t oflag = O_RDONLY);
   bool isOpen() const { return _fp != nullptr || _dir != nullptr; }
   explicit operator bool() const { return isOpen(); }
-  void close();
+  bool close();
 
   bool isDirectory() const { return _dir != nullptr; }
   bool isDir() const { return isDirectory(); }
@@ -95,6 +95,8 @@ class FsFile : public Print {
   void rewind();
 
   size_t getName(char* out, size_t cap) const;
+  bool getModifyDateTime(uint16_t* date, uint16_t* time) const;
+  bool rename(const char* newPath);
   const char* name() const { return _name.c_str(); }
 
   uint64_t fileSize() const;
@@ -112,13 +114,14 @@ class FsFile : public Print {
   int peek();
   size_t write(uint8_t b) override;
   size_t write(const uint8_t* buf, size_t count) override;
+  size_t write(const void* buf, size_t count) { return write(static_cast<const uint8_t*>(buf), count); }
   size_t write(const char* s) { return write(reinterpret_cast<const uint8_t*>(s), strlen(s)); }
   size_t print(const char* s) { return write(s); }
   size_t print(const String& s) { return write(s.c_str()); }
   size_t println(const char* s) { return write(s) + write("\n"); }
   bool truncate(uint64_t length = 0);
   bool sync();
-  void flush() { sync(); }
+  void flush() override { sync(); }
 
  private:
   void moveFrom(FsFile& o);
