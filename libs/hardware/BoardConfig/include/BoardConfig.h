@@ -1827,8 +1827,10 @@ constexpr BoardProfile XTEINK_X4_CLASSIC = {
     NO_MIC,
     // Shared I2C bus SDA39/SCL38 @400k: BM8563 RTC (PCF8563-compatible) @0x51, plus a
     // QMI8658 6-axis IMU @0x6B (RE-confirmed: WHO_AM_I reg0==0x05, CTRL1/2/3/7 init on
-    // addr 0x6B, no INT pin). {sda,scl,hz,rtcAddr,tempHumAddr,imuAddr,bus,rtcType,imuType}
-    {39, 38, 400000, 0x51, 0, 0x6B, 0, RtcType::Pcf8563, ImuType::Qmi8658},
+    // addr 0x6B, no INT pin). {sda,scl,hz,rtcAddr,tempHumAddr,imuAddr,bus,rtcType,imuType,
+    // imuSwapXY,imuFlipX}. imuFlipX: X reads opposite the X3 frame (held upright
+    // read as upside down); Y matches (landscape turns read correctly).
+    {39, 38, 400000, 0x51, 0, 0x6B, 0, RtcType::Pcf8563, ImuType::Qmi8658, false, true},
     1.0f,  // uiScale: button-navigated device (no touch) — original pixel-era chrome sizes
     // GPIO1 is the board's master peripheral/panel rail. GPIO10 is display RESET,
     // not a power latch, and is initialized by EpdBus.

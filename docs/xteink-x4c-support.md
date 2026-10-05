@@ -88,7 +88,9 @@ One shared master bus carries three devices:
 - **Battery gauge:** CW2017 at 0x63. The gauge needs its 80-byte BATINFO profile
   uploaded before it reports SoC; `BatteryMonitor` handles this.
 - **IMU:** QMI8658 six-axis accelerometer/gyro at 0x6B (WHO_AM_I = 0x05), no
-  interrupt line. Profile: `ImuType::Qmi8658`.
+  interrupt line. Profile: `ImuType::Qmi8658`, with `imuFlipX`: its X axis
+  reads opposite the X3 frame (a device held upright read as upside down),
+  while Y matches (landscape turns read correctly).
 
 ## Battery charge status
 
