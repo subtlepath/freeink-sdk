@@ -22,12 +22,13 @@ try {
     await page.mouse.down(); await page.waitForTimeout(160); await page.mouse.up();
   }
   for (const device of devices) {
-    await page.goto(base); await page.locator('#app').selectOption('lila');
+    // A hosted lab loads lab.mjs slower than localhost; clicking first loses the Start handler.
+    await page.goto(base); await page.waitForLoadState('networkidle'); await page.locator('#app').selectOption('lila');
     await page.locator(`input[value=${device}]`).check(); await page.locator('#start').click();
     await page.waitForFunction(() => document.getElementById('console').textContent.includes('reconciled:'), null, { timeout: 60000 });
     await page.waitForTimeout(2500);
     await page.locator('#screen').screenshot({ path: `/tmp/freeink-reader-library-${device}.png` });
-    if (device === 'X4PRO') await tap(240, 185);
+    if (device === 'X4PRO') await tap(240, 120);  // the first book row under lila's Home-style header
     else { await press('Next page'); await press('Confirm'); }
     await page.waitForFunction(() => /Entering activity: (EpubReader|Reader)/.test(document.getElementById('console').textContent), null, { timeout: 20000 });
     await page.waitForTimeout(10000);

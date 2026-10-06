@@ -10,6 +10,8 @@ try {
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error') console.log('console:', m.text()); });
   await page.goto(base);
+  // A hosted lab loads lab.mjs slower than localhost; clicking first loses the Start handler.
+  await page.waitForLoadState('networkidle');
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   for (const device of (process.env.FSIM_TEST_DEVICES || 'X3').split(',')) {
     await page.locator(`input[name=device][value=${device}]`).check();
