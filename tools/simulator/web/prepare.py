@@ -80,10 +80,12 @@ def source_archive(out, root, app):
         deps = root/'.pio/libdeps'
         targets = sorted(deps.iterdir()) if deps.is_dir() else []
         if targets:
+            # Dependency demos and sample images are not firmware source; skipping them keeps the archive under host file limits.
+            dep_excluded = excluded | {'examples', 'test_images', 'MacOS'}
             for library in sorted(targets[0].iterdir()):
                 if not library.is_dir() or library.is_symlink(): continue
                 for path in sorted(library.rglob('*')):
-                    if path.is_file() and not any(p in excluded for p in path.parts) and path.suffix not in {'.bin','.elf','.o','.a','.epub','.zip'}:
+                    if path.is_file() and not any(p in dep_excluded for p in path.relative_to(library).parts) and path.suffix.lower() not in {'.bin','.elf','.o','.a','.epub','.zip','.jpg','.jpeg','.png','.bmp','.gif'}:
                         archive.write(path, str(Path(app)/'dependencies'/library.name/path.relative_to(library)))
     digest = hashlib.sha256(temporary.read_bytes()).hexdigest()[:12]
     target = out/f'{app}-source-{digest}.zip'
