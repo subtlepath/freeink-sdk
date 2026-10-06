@@ -8,14 +8,28 @@
 // BM8563, CW2017, QMI8658, LM3630A — running against virtual devices, so
 // probe/NACK behaviour matches hardware: an address nothing answers returns a
 // nonzero endTransmission() and firmware takes its device-absent path.
+//
+// Like the ESP32 core's TwoWire, a transaction owns the bus from
+// beginTransmission() until endTransmission(true) or the end of requestFrom(),
+// so a repeated-start register read in one task can't interleave with
+// another task's. Without that, two tasks sharing Wire (touch polling in the
+// loop, the battery gauge read while rendering) race on the buffers below.
 
 #include <Arduino.h>
 
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 class SimWire {
  public:
-  explicit SimWire(int bus = 0) : _bus(bus) {}
+  explicit SimWire(int bus = 0) : _bus(bus) {
+    // Fixed capacity, as the core's buffers are: assign()/clear() never
+    // reallocate under a reader still draining a previous reply.
+    _tx.reserve(kBufferSize);
+    _rx.reserve(kBufferSize);
+  }
 
   bool begin(int sda = -1, int scl = -1, uint32_t hz = 100000) {
     _sda = sda;
@@ -33,6 +47,7 @@ class SimWire {
   void setTimeout(uint32_t) {}
 
   void beginTransmission(uint8_t addr) {
+    acquire();
     _addr = addr;
     _tx.clear();
   }
@@ -46,13 +61,22 @@ class SimWire {
   }
 
   // 0 = success (ACK), 2 = address NACK — the codes firmware branches on.
-  uint8_t endTransmission(bool = true) {
+  uint8_t endTransmission(bool sendStop = true) {
     const int rc = fsim_i2c_xfer(_bus, _addr, _tx.data(), _tx.size(), nullptr, 0);
     _tx.clear();
+    // Hardware keeps the bus for the repeated-start read that follows a
+    // non-stop write. This model sends the write now and can NACK it, after
+    // which drivers skip requestFrom(), so release on failure too.
+    if (sendStop || rc != 0) release();
     return rc == 0 ? 0 : 2;
   }
 
   uint8_t requestFrom(uint8_t addr, size_t len, bool = true) {
+    acquire();
+    struct Release {
+      SimWire& wire;
+      ~Release() { wire.release(); }
+    } releaseOnReturn{*this};
     _addr = addr;
     _rx.assign(len, 0);
     _rxPos = 0;
@@ -75,6 +99,23 @@ class SimWire {
   void flush() {}
 
  private:
+  static constexpr size_t kBufferSize = 128;  // the ESP32 core's default I2C buffer
+
+  // Re-entrant for the owning task, as the core's currentTaskHandle check is.
+  void acquire() {
+    const auto self = std::this_thread::get_id();
+    if (_holder.load() == self) return;
+    _lock.lock();
+    _holder.store(self);
+  }
+  void release() {
+    if (_holder.load() != std::this_thread::get_id()) return;
+    _holder.store(std::thread::id());
+    _lock.unlock();
+  }
+
+  std::mutex _lock;
+  std::atomic<std::thread::id> _holder{};
   int _bus;
   int _sda = -1;
   int _scl = -1;
