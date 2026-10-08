@@ -15,11 +15,12 @@
 // forces SdFat's USE_UTF8_LONG_NAMES on for the whole build — without it,
 // SdFat mangles any non-ASCII long filename into an unopenable path.
 
-#include <WString.h>
-#include <vector>
-#include <string>
-#include <SdFat.h>
 #include <BoardConfig.h>
+#include <SdFat.h>
+#include <WString.h>
+
+#include <string>
+#include <vector>
 
 #if FREEINK_SD_SDMMC
 namespace freeink {
@@ -32,6 +33,8 @@ class SDCardManager {
   SDCardManager();
   bool begin();
   bool ready() const;
+  // Physical CID fields in a canonical 16-byte representation, independent of files.
+  bool cardIdentity(uint8_t out[16]);
   // Returns the total card capacity in bytes. Cached at begin(); 0 if not mounted.
   uint64_t sdTotalBytes() const;
   // Returns used space in bytes, cached with a 20-second TTL (freeClusterCount
@@ -107,7 +110,7 @@ class SDCardManager {
   void shutdown() {}
 #endif
 
- static SDCardManager& getInstance() { return instance; }
+  static SDCardManager& getInstance() { return instance; }
 
  private:
   static SDCardManager instance;

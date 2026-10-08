@@ -6,13 +6,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_heap_caps.h"
-
 #include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
+#include "esp_heap_caps.h"
 #include "sdmmc_cmd.h"
 
 namespace freeink {
+
+bool SdmmcBlockDevice::cardIdentity(uint8_t out[16]) const {
+  if (!_card || !out) return false;
+  const auto& cid = static_cast<const sdmmc_card_t*>(_card)->cid;
+  out[0] = static_cast<uint8_t>(cid.mfg_id);
+  out[1] = static_cast<uint8_t>(cid.oem_id >> 8);
+  out[2] = static_cast<uint8_t>(cid.oem_id);
+  memcpy(out + 3, cid.name, 5);
+  out[8] = static_cast<uint8_t>(cid.revision);
+  const uint32_t serial = static_cast<uint32_t>(cid.serial);
+  for (unsigned i = 0; i < 4; ++i) out[9 + i] = static_cast<uint8_t>(serial >> (24 - 8 * i));
+  out[13] = static_cast<uint8_t>((cid.date >> 8) & 0x0F);
+  out[14] = static_cast<uint8_t>(cid.date);
+  out[15] = 0;
+  return true;
+}
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (pins.busWidth == 0) return false;
@@ -35,8 +50,9 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
       return false;
     }
     delay(1);
-    if (Serial) Serial.printf("[%lu] [SD] Metalio DAT3/CD GPIO46=%d (expected 1)\n", millis(),
-                              gpio_get_level(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO)));
+    if (Serial)
+      Serial.printf("[%lu] [SD] Metalio DAT3/CD GPIO46=%d (expected 1)\n", millis(),
+                    gpio_get_level(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO)));
   }
 #endif
 
@@ -91,8 +107,8 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // live in PSRAM / at an unaligned address, while native SDMMC requires an
   // internal-RAM DMA buffer. Limiting each transfer to eight sectors keeps the
   // buffer bounded at 4 KiB and avoids heap churn in the USB-MSC callbacks.
-  _dmaBuffer = static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors,
-                                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  _dmaBuffer =
+      static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
   if (!_dmaBuffer) {
     free(card);
     sdmmc_host_deinit();
@@ -124,8 +140,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     if (e == ESP_OK) break;
   }
   if (mountErr != ESP_OK) {
-    if (Serial)
-      Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
+    if (Serial) Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
     heap_caps_free(_dmaBuffer);
     _dmaBuffer = nullptr;
     free(card);

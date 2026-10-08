@@ -29,6 +29,7 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   // card. Returns false (and leaves the device unusable) on any failure.
   bool begin(const BoardConfig::SdmmcPins& pins);
   void end() override;
+  bool cardIdentity(uint8_t out[16]) const;
 
   bool isBusy() override { return false; }
   bool readSector(Sector_t sector, uint8_t* dst) override { return readSectors(sector, dst, 1); }
