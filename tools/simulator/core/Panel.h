@@ -87,6 +87,7 @@ class Panel {
   // Called from the SPI model for every byte, with the D/C level at that
   // moment. This is the only way pixels reach the panel on native-bus boards.
   void spiByte(uint8_t value, bool isData);
+  void spiTransfer(const uint8_t* tx, uint8_t* rx, size_t len, bool isData);
   uint8_t spiReadByte();
   void hardwareReset();
   void setPowered(bool powered);

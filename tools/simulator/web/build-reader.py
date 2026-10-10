@@ -47,7 +47,7 @@ def main():
     sources += sorted((deps/'PNGdec/src').glob('*.c'))
     sources = [s for s in sources if s.name != 'HalSystem.cpp' and s.parent != root/'src/network' and s.name != 'miniz.c']
     sources += [HERE/'reader-offline.cpp', SIM/'emu/Md5.cpp']
-    flags = ['-O1','-pthread', '-DFSIM_WEB=1','-DFREEINK_CAP_USB_MSC=0','-DRTC_NOINIT_ATTR=', '-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1', '-DUSE_UTF8_LONG_NAMES=1', '-DLOG_LEVEL=2', '-DXML_CONTEXT_BYTES=1024','-DXML_GE=0','-DMINIZ_NO_ZLIB_COMPATIBLE_NAMES=1', '-DCROSSPOINT_VERSION="0.1.0-web"','-DCROSSPOINT_UPSTREAM_VERSION="1.6.5"', f'-DFREEINK_DEVICE_{args.device}=1','-DFSIM_SOC_SPI_PERIPH_NUM='+('1' if args.device=='X3' else '2'), '-DFSIM_SOC_GPIO_PIN_COUNT='+('22' if args.device=='X3' else '48')]
+    flags = ['-O2','-pthread', '-DFSIM_WEB=1','-DFREEINK_CAP_USB_MSC=0','-DRTC_NOINIT_ATTR=', '-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1', '-DUSE_UTF8_LONG_NAMES=1', '-DLOG_LEVEL=2', '-DXML_CONTEXT_BYTES=1024','-DXML_GE=0','-DMINIZ_NO_ZLIB_COMPATIBLE_NAMES=1', '-DCROSSPOINT_VERSION="0.1.0-web"','-DCROSSPOINT_UPSTREAM_VERSION="1.6.5"', f'-DFREEINK_DEVICE_{args.device}=1','-DFSIM_SOC_SPI_PERIPH_NUM='+('1' if args.device=='X3' else '2'), '-DFSIM_SOC_GPIO_PIN_COUNT='+('22' if args.device=='X3' else '48')]
     flags += [f'-I{p}' for p in includes if p.is_dir()]
     flags += ['-DARDUINOJSON_ENABLE_ARDUINO_STRING=1', '-DARDUINOJSON_ENABLE_ARDUINO_STREAM=1', '-DENABLE_SERIAL_LOG=1']
     def compile_one(source):

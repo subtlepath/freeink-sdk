@@ -488,21 +488,30 @@ const char* Panel::controllerName() const {
   return controller_ ? controller_->name() : "external";
 }
 
-void Panel::spiByte(uint8_t value, bool isData) {
+void Panel::spiByte(uint8_t value, bool isData) { spiTransfer(&value, nullptr, 1, isData); }
+
+void Panel::spiTransfer(const uint8_t* tx, uint8_t* rx, size_t len, bool isData) {
   bool startedRefresh = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!controller_) return;
+    if (!controller_) {
+      if (rx) memset(rx, 0xFF, len);
+      return;
+    }
     const bool wasRefreshing = refreshing_;
-    if (isData) {
-      controller_->data(&value, 1);
-    } else {
-      controller_->command(value);
+    for (size_t i = 0; i < len; ++i) {
+      if (tx) {
+        if (isData) {
+          controller_->data(tx + i, 1);
+        } else {
+          controller_->command(tx[i]);
+        }
+      }
+      if (rx) rx[i] = controller_->readByte();
     }
     startedRefresh = refreshing_ && !wasRefreshing;
   }
-  // The waveform's BUSY assertion is a real pin edge, raised after the panel
-  // lock is dropped so the firmware's ISR cannot deadlock against it.
+  // Raise BUSY outside the panel lock so the firmware ISR can take it.
   if (startedRefresh) machine_.setPanelBusy(true);
 }
 

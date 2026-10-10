@@ -181,10 +181,7 @@ void fsim_spi_transfer(int bus, const uint8_t* tx, uint8_t* rx, size_t len) {
   }
 
   auto& panel = machine().panel();
-  for (size_t i = 0; i < len; ++i) {
-    if (tx) panel.spiByte(tx[i], isData);
-    if (rx) rx[i] = panel.spiReadByte();
-  }
+  panel.spiTransfer(tx, rx, len, isData);
 
   // Charge the transfer its wire time so a slow bus really is slow: streaming
   // 48 KB at 10 MHz costs ~38 ms of simulated time, which is what makes a
